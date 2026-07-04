@@ -1,0 +1,62 @@
+name: MyVitalRelay
+options:
+  bundleIdPrefix: tv.civictech
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  Supabase:
+    url: https://github.com/supabase/supabase-swift
+    from: "2.5.0"
+
+targets:
+  MyVitalRelay:
+    type: application
+    platform: iOS
+    sources:
+      - MyVitalRelay
+    dependencies:
+      - package: Supabase
+        product: Supabase
+    entitlements:
+      path: MyVitalRelay/MyVitalRelay.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.background-delivery: true
+    info:
+      path: MyVitalRelay/Info.plist
+      properties:
+        CFBundleDisplayName: MyVitalRelay
+        NSHealthShareUsageDescription: トレーニング記録をSupabaseへ同期するため、ヘルスケアデータの読み取りを許可してください。
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - tv.civictech.myvitalrelay
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+
+  MyVitalRelayTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - MyVitalRelayTests
+    dependencies:
+      - target: MyVitalRelay
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  MyVitalRelay:
+    build:
+      targets:
+        MyVitalRelay: all
+    test:
+      targets:
+        - MyVitalRelayTests
