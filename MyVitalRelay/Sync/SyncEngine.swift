@@ -8,7 +8,9 @@ import Supabase
 final class SyncEngine {
     private(set) var isSyncing = false
     private(set) var lastSyncAt: Date?
-    private(set) var lastSyncedCount = 0
+    private(set) var lastSyncedWorkoutCount = 0
+    private(set) var lastSyncedBodyCount = 0
+    private(set) var lastSyncedSleepCount = 0
     private(set) var lastError: String?
 
     private let store = HKHealthStore()
@@ -49,26 +51,71 @@ final class SyncEngine {
         defer { isSyncing = false }
 
         do {
-            let fetcher = WorkoutFetcher(store: store)
-            let (workouts, newAnchor) = try await fetcher.fetchNewWorkouts(after: WorkoutAnchorStore.load())
-            let records = workouts.map {
-                WorkoutMapper.record(from: WorkoutSnapshot(workout: $0), userId: userId)
-            }
-            if !records.isEmpty {
-                try await client.from("training_log")
-                    .upsert(records, onConflict: "healthkit_uuid")
-                    .execute()
-            }
-            // アンカーは書き込み成功後にのみ前進。失敗時は次回同じ範囲を再取得する（アップサートなので重複しない）。
-            if let newAnchor {
-                WorkoutAnchorStore.save(newAnchor)
-            }
-            lastSyncedCount = records.count
+            lastSyncedWorkoutCount = try await syncWorkouts(userId: userId)
+            lastSyncedBodyCount = try await syncBodyComposition(userId: userId)
+            lastSyncedSleepCount = try await syncSleepSegments(userId: userId)
             lastSyncAt = .now
             UserDefaults.standard.set(lastSyncAt, forKey: "lastSyncAt")
             lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    private func syncWorkouts(userId: UUID) async throws -> Int {
+        let fetcher = WorkoutFetcher(store: store)
+        let (workouts, newAnchor) = try await fetcher.fetchNewWorkouts(after: WorkoutAnchorStore.load())
+        let records = workouts.map {
+            WorkoutMapper.record(from: WorkoutSnapshot(workout: $0), userId: userId)
+        }
+        if !records.isEmpty {
+            try await client.from("training_log")
+                .upsert(records, onConflict: "healthkit_uuid")
+                .execute()
+        }
+        if let newAnchor {
+            WorkoutAnchorStore.save(newAnchor)
+        }
+        return records.count
+    }
+
+    private func syncBodyComposition(userId: UUID) async throws -> Int {
+        let fetcher = BodyCompositionFetcher(store: store)
+        let result = try await fetcher.fetchNewSamples(
+            after: BodyCompositionAnchorStore.loadBodyMass(),
+            bodyFatAnchor: BodyCompositionAnchorStore.loadBodyFat()
+        )
+        let records = result.samples.map {
+            BodyCompositionMapper.record(from: BodyCompositionSnapshot(sample: $0), userId: userId)
+        }
+        if !records.isEmpty {
+            try await client.from("body_composition_sample")
+                .upsert(records, onConflict: "healthkit_uuid")
+                .execute()
+        }
+        if let anchor = result.bodyMassAnchor {
+            BodyCompositionAnchorStore.saveBodyMass(anchor)
+        }
+        if let anchor = result.bodyFatAnchor {
+            BodyCompositionAnchorStore.saveBodyFat(anchor)
+        }
+        return records.count
+    }
+
+    private func syncSleepSegments(userId: UUID) async throws -> Int {
+        let fetcher = SleepSegmentFetcher(store: store)
+        let (samples, newAnchor) = try await fetcher.fetchNewSegments(after: SleepSegmentAnchorStore.load())
+        let records = samples.compactMap { sample in
+            SleepSegmentMapper.record(from: SleepSegmentSnapshot(sample: sample), userId: userId)
+        }
+        if !records.isEmpty {
+            try await client.from("sleep_segment")
+                .upsert(records, onConflict: "healthkit_uuid")
+                .execute()
+        }
+        if let newAnchor {
+            SleepSegmentAnchorStore.save(newAnchor)
+        }
+        return records.count
     }
 }
