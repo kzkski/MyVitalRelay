@@ -54,51 +54,18 @@ struct SyncStatusView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("同期状況") {
-                    LabeledContent("最終同期", value: syncEngine.lastSyncAt.map {
-                        $0.formatted(date: .abbreviated, time: .shortened)
-                    } ?? "未実行")
-                    LabeledContent("直近の同期", value: syncSummary)
-                    if let error = syncEngine.lastError {
-                        Text(error).foregroundStyle(.red)
-                    }
-                }
-                Section("直近のトレーニング（training_log）") {
-                    recentList(recentWorkouts, empty: "レコードなし") { row in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(row.date)  \(row.discipline)")
-                            Text("\(row.dataSource) / \(row.distanceKm.map { String(format: "%.2f km", $0) } ?? "-") / \(row.durationMin.map { String(format: "%.0f 分", $0) } ?? "-")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                Section("直近の体組成（body_composition_sample）") {
-                    recentList(recentBody, empty: "レコードなし") { row in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(row.date)
-                            Text(bodySummary(row))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                Section("直近の睡眠（sleep_segment）") {
-                    recentList(recentSleep, empty: "レコードなし") { row in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(row.stage)  \(sleepDuration(row.durationSec))")
-                            Text(row.startTime)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                statusSection
+                workoutSection
+                bodySection
+                sleepSection
             }
             .navigationTitle("MyVitalRelay")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("サインアウト") {
+                    Button {
                         Task { await auth.signOut() }
+                    } label: {
+                        Label("サインアウト", systemImage: "rectangle.portrait.and.arrow.right")
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -111,9 +78,11 @@ struct SyncStatusView: View {
                         if syncEngine.isSyncing {
                             ProgressView()
                         } else {
-                            Text("今すぐ同期")
+                            Label("今すぐ同期", systemImage: "arrow.triangle.2.circlepath")
+                                .labelStyle(.titleAndIcon)
                         }
                     }
+                    .disabled(syncEngine.isSyncing)
                 }
             }
             .task { await loadRecent() }
@@ -124,8 +93,165 @@ struct SyncStatusView: View {
         }
     }
 
-    private var syncSummary: String {
-        "ワークアウト \(syncEngine.lastSyncedWorkoutCount) / 体組成 \(syncEngine.lastSyncedBodyCount) / 睡眠 \(syncEngine.lastSyncedSleepCount)"
+    // MARK: - 同期状況
+
+    private var statusSection: some View {
+        Section {
+            HStack(spacing: 14) {
+                statusBadge
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(statusTitle)
+                        .font(.headline)
+                    Text(lastSyncText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+
+            HStack(spacing: 10) {
+                statChip(icon: "figure.run", tint: .orange,
+                         label: "ワークアウト", count: syncEngine.lastSyncedWorkoutCount)
+                statChip(icon: "scalemass.fill", tint: .purple,
+                         label: "体組成", count: syncEngine.lastSyncedBodyCount)
+                statChip(icon: "bed.double.fill", tint: .indigo,
+                         label: "睡眠", count: syncEngine.lastSyncedSleepCount)
+            }
+            .padding(.vertical, 4)
+
+            if let error = syncEngine.lastError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+        } header: {
+            Text("同期状況")
+        } footer: {
+            Text("下に引っ張ると再同期します")
+        }
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        ZStack {
+            Circle()
+                .fill(statusColor.opacity(0.15))
+                .frame(width: 44, height: 44)
+            if syncEngine.isSyncing {
+                ProgressView()
+            } else {
+                Image(systemName: statusSymbol)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(statusColor)
+            }
+        }
+    }
+
+    private var statusTitle: String {
+        if syncEngine.isSyncing { return "同期中…" }
+        if syncEngine.lastError != nil { return "同期エラー" }
+        return syncEngine.lastSyncAt == nil ? "未同期" : "同期済み"
+    }
+
+    private var statusSymbol: String {
+        if syncEngine.lastError != nil { return "exclamationmark.icloud.fill" }
+        return syncEngine.lastSyncAt == nil ? "icloud.slash.fill" : "checkmark.icloud.fill"
+    }
+
+    private var statusColor: Color {
+        if syncEngine.isSyncing { return .accentColor }
+        if syncEngine.lastError != nil { return .red }
+        return syncEngine.lastSyncAt == nil ? .secondary : .green
+    }
+
+    private var lastSyncText: String {
+        guard let at = syncEngine.lastSyncAt else { return "最終同期: 未実行" }
+        return "最終同期: \(at.formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    private func statChip(icon: String, tint: Color, label: String, count: Int) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+            Text("\(count)")
+                .font(.headline.monospacedDigit())
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    // MARK: - 直近レコード
+
+    private var workoutSection: some View {
+        Section {
+            recentList(recentWorkouts, empty: "レコードなし") { row in
+                recordRow(icon: disciplineSymbol(row.discipline), tint: .orange) {
+                    Text("\(row.date)  \(disciplineLabel(row.discipline))")
+                } detail: {
+                    Text("\(row.dataSource) / \(row.distanceKm.map { String(format: "%.2f km", $0) } ?? "-") / \(row.durationMin.map { String(format: "%.0f 分", $0) } ?? "-")")
+                }
+            }
+        } header: {
+            Label("直近のトレーニング", systemImage: "figure.run")
+        }
+    }
+
+    private var bodySection: some View {
+        Section {
+            recentList(recentBody, empty: "レコードなし") { row in
+                recordRow(icon: "scalemass.fill", tint: .purple) {
+                    Text(bodySummary(row))
+                } detail: {
+                    Text(formatTimestamp(row.measuredAt))
+                }
+            }
+        } header: {
+            Label("直近の体組成", systemImage: "scalemass.fill")
+        }
+    }
+
+    private var sleepSection: some View {
+        Section {
+            recentList(recentSleep, empty: "レコードなし") { row in
+                recordRow(icon: "bed.double.fill", tint: .indigo) {
+                    Text("\(stageLabel(row.stage))  \(sleepDuration(row.durationSec))")
+                } detail: {
+                    Text(formatTimestamp(row.startTime))
+                }
+            }
+        } header: {
+            Label("直近の睡眠", systemImage: "bed.double.fill")
+        }
+    }
+
+    private func recordRow(
+        icon: String,
+        tint: Color,
+        @ViewBuilder title: () -> Text,
+        @ViewBuilder detail: () -> Text
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(tint.opacity(0.12))
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                title()
+                    .font(.subheadline)
+                detail()
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     @ViewBuilder
@@ -143,6 +269,37 @@ struct SyncStatusView: View {
         }
     }
 
+    // MARK: - 表示用フォーマット
+
+    private func disciplineSymbol(_ discipline: String) -> String {
+        switch discipline {
+        case "run": "figure.run"
+        case "bike": "bicycle"
+        case "swim": "figure.pool.swim"
+        case "strength": "dumbbell.fill"
+        default: "figure.mixed.cardio"
+        }
+    }
+
+    private func disciplineLabel(_ discipline: String) -> String {
+        switch discipline {
+        case "run": "ラン"
+        case "bike": "バイク"
+        case "swim": "スイム"
+        case "strength": "筋トレ"
+        default: "その他"
+        }
+    }
+
+    private func stageLabel(_ stage: String) -> String {
+        switch stage {
+        case "core": "コア睡眠"
+        case "deep": "深い睡眠"
+        case "rem": "レム睡眠"
+        default: "睡眠"
+        }
+    }
+
     private func bodySummary(_ row: RecentBodyCompositionRow) -> String {
         let parts = [
             row.weightKg.map { String(format: "%.1f kg", $0) },
@@ -154,7 +311,22 @@ struct SyncStatusView: View {
     private func sleepDuration(_ seconds: Int) -> String {
         let hours = seconds / 3600
         let minutes = (seconds % 3600) / 60
-        return "\(hours)時間\(minutes)分"
+        return hours > 0 ? "\(hours)時間\(minutes)分" : "\(minutes)分"
+    }
+
+    private static let isoWithFraction: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let iso: ISO8601DateFormatter = ISO8601DateFormatter()
+
+    /// DBのISO8601文字列をそのまま出さず、端末ロケールの短い表記にする（パース不能なら原文のまま）。
+    private func formatTimestamp(_ value: String) -> String {
+        let date = Self.isoWithFraction.date(from: value) ?? Self.iso.date(from: value)
+        guard let date else { return value }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 
     private func loadRecent() async {
