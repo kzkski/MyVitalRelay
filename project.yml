@@ -32,6 +32,10 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - tv.civictech.myvitalrelay
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1"
@@ -44,6 +48,9 @@ targets:
       - MyVitalRelayTests
     dependencies:
       - target: MyVitalRelay
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 
 schemes:
   MyVitalRelay:

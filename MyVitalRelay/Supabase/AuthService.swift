@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 import Observation
 import Supabase
@@ -30,12 +31,29 @@ final class AuthService {
     func signIn(email: String, password: String) async {
         do {
             let session = try await client.auth.signIn(email: email, password: password)
-            isSignedIn = true
-            userId = session.user.id
-            errorMessage = nil
+            applySession(session)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func signInWithGoogle() async {
+        do {
+            let session = try await client.auth.signInWithOAuth(provider: .google)
+            applySession(session)
+        } catch {
+            if let authError = error as? ASWebAuthenticationSessionError,
+               authError.code == .canceledLogin {
+                return
+            }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func applySession(_ session: Session) {
+        isSignedIn = true
+        userId = session.user.id
+        errorMessage = nil
     }
 
     func signOut() async {

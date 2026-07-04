@@ -9,19 +9,28 @@ struct SignInView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Supabaseアカウント") {
+                Section {
+                    Button {
+                        Task {
+                            isBusy = true
+                            await auth.signInWithGoogle()
+                            isBusy = false
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: "globe")
+                            Text("Googleでサインイン")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .disabled(isBusy)
+                }
+                Section("メールアドレスでサインイン") {
                     TextField("メールアドレス", text: $email)
                         .keyboardType(.emailAddress)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     SecureField("パスワード", text: $password)
-                }
-                if let message = auth.errorMessage {
-                    Section {
-                        Text(message).foregroundStyle(.red)
-                    }
-                }
-                Section {
                     Button {
                         Task {
                             isBusy = true
@@ -36,6 +45,11 @@ struct SignInView: View {
                         }
                     }
                     .disabled(email.isEmpty || password.isEmpty || isBusy)
+                }
+                if let message = auth.errorMessage {
+                    Section {
+                        Text(message).foregroundStyle(.red)
+                    }
                 }
             }
             .navigationTitle("MyVitalRelay")

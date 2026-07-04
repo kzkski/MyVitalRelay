@@ -15,7 +15,17 @@ open MyVitalRelay.xcodeproj
 
 1. ターゲット MyVitalRelay の Signing & Capabilities で自分のチームを選択（バンドルIDは既定で `tv.civictech.MyVitalRelay`。変える場合は project.yml の `bundleIdPrefix`）。
 2. 実機（iPhone）を接続して Run。**HealthKitはシミュレータでは実データが取れないため、検証は実機前提。**
-3. 初回起動で Supabase アカウント（ケトログと同じメール＋パスワード）でサインイン → HealthKitの許可ダイアログで全項目を許可。
+3. 初回起動で **Googleでサインイン**（ケトログと同じGoogleアカウント）→ HealthKitの許可ダイアログで全項目を許可。
+
+### Google認証のSupabase設定（初回のみ）
+
+1. [Authentication → Providers → Google](https://supabase.com/dashboard/project/ykcbevvorckcigwwtftw/auth/providers) で **Google を有効化**
+2. Google Cloud Console で **Web application** の OAuth クライアントを作成し、Client ID / Secret を Supabase に登録
+3. [Authentication → URL Configuration](https://supabase.com/dashboard/project/ykcbevvorckcigwwtftw/auth/url-configuration) の **Redirect URLs** に以下を追加:
+   - `tv.civictech.myvitalrelay://login-callback`
+4. アプリを再ビルドして「Googleでサインイン」を試す
+
+メール＋パスワードでのサインインも残しているが、Email provider が無効な場合は Google 認証を使うこと。
 
 SupabaseのURL・publishable keyは `MyVitalRelay/Config/SupabaseConfig.swift` に埋め込み済み（RLS前提の公開値）。
 

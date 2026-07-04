@@ -10,6 +10,7 @@ struct MyVitalRelayApp: App {
             RootView()
                 .environment(auth)
                 .environment(syncEngine)
+                .onOpenURL { SupabaseClientProvider.shared.handle($0) }
         }
     }
 }
