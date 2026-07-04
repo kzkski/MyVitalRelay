@@ -1,10 +1,22 @@
 import HealthKit
 
-/// 新規ワークアウトがHealthKitに書き込まれたタイミングでアプリを起こし、自動同期する。
+/// HealthKit 更新時にアプリを起こし、自動同期する。
 final class BackgroundDeliveryManager {
+    private struct ObservedType {
+        let sampleType: HKSampleType
+        let frequency: HKUpdateFrequency
+    }
+
     private let store: HKHealthStore
     private let onUpdate: () async -> Void
-    private var observerQuery: HKObserverQuery?
+    private var observerQueries: [HKObserverQuery] = []
+
+    private static let observedTypes: [ObservedType] = [
+        .init(sampleType: .workoutType(), frequency: .immediate),
+        .init(sampleType: HKQuantityType(.bodyMass), frequency: .immediate),
+        .init(sampleType: HKQuantityType(.bodyFatPercentage), frequency: .immediate),
+        .init(sampleType: HKCategoryType(.sleepAnalysis), frequency: .daily),
+    ]
 
     init(store: HKHealthStore, onUpdate: @escaping () async -> Void) {
         self.store = store
@@ -12,20 +24,23 @@ final class BackgroundDeliveryManager {
     }
 
     func enable() async throws {
-        try await store.enableBackgroundDelivery(for: .workoutType(), frequency: .immediate)
-        guard observerQuery == nil else { return }
-        let query = HKObserverQuery(sampleType: .workoutType(), predicate: nil) { [weak self] _, completionHandler, error in
-            guard error == nil, let self else {
-                completionHandler()
-                return
-            }
-            Task {
-                await self.onUpdate()
-                // 同期完了後に呼ぶことで、OSに処理完了を伝える（呼び忘れは配信停止の原因になる）
-                completionHandler()
-            }
+        for config in Self.observedTypes {
+            try await store.enableBackgroundDelivery(for: config.sampleType, frequency: config.frequency)
         }
-        observerQuery = query
-        store.execute(query)
+        guard observerQueries.isEmpty else { return }
+        for config in Self.observedTypes {
+            let query = HKObserverQuery(sampleType: config.sampleType, predicate: nil) { [weak self] _, completionHandler, error in
+                guard error == nil, let self else {
+                    completionHandler()
+                    return
+                }
+                Task {
+                    await self.onUpdate()
+                    completionHandler()
+                }
+            }
+            observerQueries.append(query)
+            store.execute(query)
+        }
     }
 }
