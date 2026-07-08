@@ -114,8 +114,7 @@ struct SyncStatusView: View {
                          label: "ワークアウト", count: syncEngine.lastSyncedWorkoutCount)
                 statChip(icon: "scalemass.fill", tint: .purple,
                          label: "体組成", count: syncEngine.lastSyncedBodyCount)
-                statChip(icon: "bed.double.fill", tint: .indigo,
-                         label: "睡眠", count: syncEngine.lastSyncedSleepCount)
+                sleepStatChip
             }
             .padding(.vertical, 4)
 
@@ -167,6 +166,28 @@ struct SyncStatusView: View {
     private var lastSyncText: String {
         guard let at = syncEngine.lastSyncAt else { return "最終同期: 未実行" }
         return "最終同期: \(at.formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    private var sleepStatChip: some View {
+        VStack(spacing: 4) {
+            Image(systemName: "bed.double.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.indigo)
+            if syncEngine.lastSyncedSleepDeletedCount > 0 {
+                Text("+\(syncEngine.lastSyncedSleepCount) −\(syncEngine.lastSyncedSleepDeletedCount)")
+                    .font(.headline.monospacedDigit())
+            } else {
+                Text("\(syncEngine.lastSyncedSleepCount)")
+                    .font(.headline.monospacedDigit())
+            }
+            Text("睡眠")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Color.indigo.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func statChip(icon: String, tint: Color, label: String, count: Int) -> some View {
