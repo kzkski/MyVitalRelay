@@ -125,8 +125,7 @@ struct SyncStatusView: View {
             .padding(.vertical, 4)
 
             HStack(spacing: 10) {
-                statChip(icon: "figure.run", tint: .orange,
-                         label: "ワークアウト", count: syncEngine.lastSyncedWorkoutCount)
+                workoutStatChip
                 statChip(icon: "scalemass.fill", tint: .purple,
                          label: "体組成", count: syncEngine.lastSyncedBodyCount)
                 sleepStatChip
@@ -183,6 +182,28 @@ struct SyncStatusView: View {
     private var lastSyncText: String {
         guard let at = syncEngine.lastSyncAt else { return "最終同期: 未実行" }
         return "最終同期: \(at.formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    private var workoutStatChip: some View {
+        VStack(spacing: 4) {
+            Image(systemName: "figure.run")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.orange)
+            if syncEngine.lastSyncedWorkoutDeletedCount > 0 {
+                Text("+\(syncEngine.lastSyncedWorkoutCount) −\(syncEngine.lastSyncedWorkoutDeletedCount)")
+                    .font(.headline.monospacedDigit())
+            } else {
+                Text("\(syncEngine.lastSyncedWorkoutCount)")
+                    .font(.headline.monospacedDigit())
+            }
+            Text("ワークアウト")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var sleepStatChip: some View {

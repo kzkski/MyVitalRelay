@@ -9,6 +9,7 @@ final class SyncEngine {
     private(set) var isSyncing = false
     private(set) var lastSyncAt: Date?
     private(set) var lastSyncedWorkoutCount = 0
+    private(set) var lastSyncedWorkoutDeletedCount = 0
     private(set) var lastSyncedBodyCount = 0
     private(set) var lastSyncedSleepCount = 0
     private(set) var lastSyncedSleepDeletedCount = 0
@@ -67,18 +68,27 @@ final class SyncEngine {
 
     private func syncWorkouts(userId: UUID) async throws -> Int {
         let fetcher = WorkoutFetcher(store: store)
-        let (workouts, newAnchor) = try await fetcher.fetchNewWorkouts(after: WorkoutAnchorStore.load())
-        let records = workouts.map {
+        let result = try await fetcher.fetchNewWorkouts(after: WorkoutAnchorStore.load())
+
+        if !result.deletedUUIDs.isEmpty {
+            try await client.from("training_log")
+                .delete()
+                .in("healthkit_uuid", values: result.deletedUUIDs)
+                .execute()
+        }
+
+        let records = result.workouts.map {
             WorkoutMapper.record(from: WorkoutSnapshot(workout: $0), userId: userId)
         }
         if !records.isEmpty {
             try await client.from("training_log")
-                .upsert(records, onConflict: "healthkit_uuid")
+                .upsert(records, onConflict: "user_id,start_time,end_time,workout_type")
                 .execute()
         }
-        if let newAnchor {
+        if let newAnchor = result.newAnchor {
             WorkoutAnchorStore.save(newAnchor)
         }
+        lastSyncedWorkoutDeletedCount = result.deletedUUIDs.count
         return records.count
     }
 

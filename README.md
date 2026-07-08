@@ -54,7 +54,9 @@ xcodebuild test -scheme MyVitalRelay -destination 'platform=iOS Simulator,name=i
 1. サインイン → HealthKit一括認可が通る
 2. Life Fitness由来ワークアウトが同期される（`data_source='life_fitness'`、心拍NULL、距離・カロリーあり）
 3. Garmin由来ワークアウトが同期される（`data_source='garmin'`、心拍・獲得標高あり）
-4. 「今すぐ同期」を何度押しても重複レコードが増えない（healthkit_uuid冪等性）
+4. 「今すぐ同期」を何度押しても重複レコードが増えない
+   （論理キー `(start_time, end_time, workout_type)` による upsert 冪等性。
+   Garmin 等で healthkit_uuid が差し替わっても1行に収まる）
 5. アプリをバックグラウンドに置いたまま新規ワークアウトがHealthKitに書かれると自動同期される（OSの裁量で遅延あり。フォアグラウンド復帰時にも必ず同期が走る）
 6. Supabase上で `metadata` 列（source_name / source_bundle_id / indoor_workout）を確認し、
    Life Fitnessの実際の書き込み項目と `HKMetadataKeyIndoorWorkout` の有無を記録
