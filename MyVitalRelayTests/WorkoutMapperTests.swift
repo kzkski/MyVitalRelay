@@ -6,6 +6,7 @@ final class WorkoutMapperTests: XCTestCase {
     private let userId = UUID()
 
     private func makeSnapshot(
+        uuid: UUID = UUID(),
         activityType: HKWorkoutActivityType = .running,
         startDate: Date = Date(timeIntervalSince1970: 1_780_000_000),
         durationSec: Double = 3000,
@@ -20,7 +21,7 @@ final class WorkoutMapperTests: XCTestCase {
         isIndoorWorkout: Bool? = nil
     ) -> WorkoutSnapshot {
         WorkoutSnapshot(
-            uuid: UUID(),
+            uuid: uuid,
             activityType: activityType,
             startDate: startDate,
             endDate: startDate.addingTimeInterval(durationSec),
@@ -106,5 +107,35 @@ final class WorkoutMapperTests: XCTestCase {
         XCTAssertEqual(WorkoutMapper.discipline(for: .cycling), "bike")
         XCTAssertEqual(WorkoutMapper.discipline(for: .swimming), "swim")
         XCTAssertEqual(WorkoutMapper.discipline(for: .yoga), "other")
+    }
+
+    func testLogicalKeyIsStableAcrossDifferentUUIDs() {
+        let base = makeSnapshot(uuid: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!)
+        let other = makeSnapshot(uuid: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!)
+
+        XCTAssertEqual(
+            WorkoutMapper.logicalKey(from: base),
+            WorkoutMapper.logicalKey(from: other)
+        )
+    }
+
+    func testLogicalKeyDiffersForDifferentWorkoutTypes() {
+        let run = makeSnapshot(activityType: .running)
+        let walk = makeSnapshot(activityType: .walking)
+
+        XCTAssertNotEqual(
+            WorkoutMapper.logicalKey(from: run),
+            WorkoutMapper.logicalKey(from: walk)
+        )
+    }
+
+    func testLogicalKeyDiffersForDifferentTimeRange() {
+        let a = makeSnapshot(startDate: Date(timeIntervalSince1970: 1_780_000_000))
+        let b = makeSnapshot(startDate: Date(timeIntervalSince1970: 1_780_100_000))
+
+        XCTAssertNotEqual(
+            WorkoutMapper.logicalKey(from: a),
+            WorkoutMapper.logicalKey(from: b)
+        )
     }
 }

@@ -5,6 +5,21 @@ import HealthKit
 enum WorkoutMapper {
     static let tokyo = TimeZone(identifier: "Asia/Tokyo")!
 
+    /// training_log 論理キーのうち Mapper が決定する部分（user_id は同期時に付与）。
+    struct LogicalKey: Equatable, Hashable {
+        var startTime: String
+        var endTime: String
+        var workoutType: String
+    }
+
+    static func logicalKey(from snapshot: WorkoutSnapshot) -> LogicalKey {
+        LogicalKey(
+            startTime: timestampString(snapshot.startDate),
+            endTime: timestampString(snapshot.endDate),
+            workoutType: snapshot.activityType.displayName
+        )
+    }
+
     static func record(from snapshot: WorkoutSnapshot, userId: UUID, now: Date = .now) -> TrainingLogRecord {
         let durationMin = snapshot.durationSec / 60.0
         let distanceKm = snapshot.distanceMeters.map { $0 / 1000.0 }
