@@ -11,6 +11,7 @@ final class SyncEngine {
     private(set) var lastSyncedWorkoutCount = 0
     private(set) var lastSyncedBodyCount = 0
     private(set) var lastSyncedSleepCount = 0
+    private(set) var lastSyncedSleepDeletedCount = 0
     private(set) var lastError: String?
 
     private let store = HKHealthStore()
@@ -104,18 +105,29 @@ final class SyncEngine {
 
     private func syncSleepSegments(userId: UUID) async throws -> Int {
         let fetcher = SleepSegmentFetcher(store: store)
-        let (samples, newAnchor) = try await fetcher.fetchNewSegments(after: SleepSegmentAnchorStore.load())
-        let records = samples.compactMap { sample in
+        let result = try await fetcher.fetchNewSegments(after: SleepSegmentAnchorStore.load())
+        let deletedUUIDs = result.deletedUUIDs
+
+        if !deletedUUIDs.isEmpty {
+            try await client.from("sleep_segment")
+                .delete()
+                .in("healthkit_uuid", values: deletedUUIDs)
+                .execute()
+        }
+
+        let records = result.samples.compactMap { sample in
             SleepSegmentMapper.record(from: SleepSegmentSnapshot(sample: sample), userId: userId)
         }
         if !records.isEmpty {
             try await client.from("sleep_segment")
-                .upsert(records, onConflict: "healthkit_uuid")
+                .upsert(records, onConflict: "user_id,start_time,end_time,stage")
                 .execute()
         }
-        if let newAnchor {
+        if let newAnchor = result.newAnchor {
             SleepSegmentAnchorStore.save(newAnchor)
         }
+
+        lastSyncedSleepDeletedCount = deletedUUIDs.count
         return records.count
     }
 }
