@@ -16,6 +16,8 @@ final class BackgroundDeliveryManager {
         .init(sampleType: HKQuantityType(.bodyMass), frequency: .immediate),
         .init(sampleType: HKQuantityType(.bodyFatPercentage), frequency: .immediate),
         .init(sampleType: HKCategoryType(.sleepAnalysis), frequency: .daily),
+        .init(sampleType: HKQuantityType(.activeEnergyBurned), frequency: .daily),
+        .init(sampleType: HKQuantityType(.basalEnergyBurned), frequency: .daily),
     ]
 
     init(store: HKHealthStore, onUpdate: @escaping () async -> Void) {

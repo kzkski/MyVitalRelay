@@ -44,12 +44,26 @@ struct RecentSleepRow: Decodable, Identifiable {
     }
 }
 
+struct RecentActivityRow: Decodable, Identifiable {
+    let id: UUID
+    let date: String
+    let activeCaloriesKcal: Double?
+    let basalCaloriesKcal: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id, date
+        case activeCaloriesKcal = "active_calories_kcal"
+        case basalCaloriesKcal = "basal_calories_kcal"
+    }
+}
+
 struct SyncStatusView: View {
     @Environment(AuthService.self) private var auth
     @Environment(SyncEngine.self) private var syncEngine
     @State private var recentWorkouts: [RecentTrainingRow] = []
     @State private var recentBody: [RecentBodyCompositionRow] = []
     @State private var recentSleep: [RecentSleepRow] = []
+    @State private var recentActivity: [RecentActivityRow] = []
 
     var body: some View {
         NavigationStack {
@@ -58,6 +72,7 @@ struct SyncStatusView: View {
                 workoutSection
                 bodySection
                 sleepSection
+                activitySection
             }
             .navigationTitle("MyVitalRelay")
             .toolbar {
@@ -115,6 +130,8 @@ struct SyncStatusView: View {
                 statChip(icon: "scalemass.fill", tint: .purple,
                          label: "体組成", count: syncEngine.lastSyncedBodyCount)
                 sleepStatChip
+                statChip(icon: "flame.fill", tint: .red,
+                         label: "活動量", count: syncEngine.lastSyncedDailyActivityCount)
             }
             .padding(.vertical, 4)
 
@@ -251,6 +268,22 @@ struct SyncStatusView: View {
         }
     }
 
+    private var activitySection: some View {
+        Section {
+            recentList(recentActivity, empty: "レコードなし") { row in
+                recordRow(icon: "flame.fill", tint: .red) {
+                    Text(activitySummary(row))
+                } detail: {
+                    Text("記録日 \(row.date)")
+                }
+            }
+        } header: {
+            Label("直近の活動量", systemImage: "flame.fill")
+        } footer: {
+            Text("日付は活動日の翌日（前日オフセット）で格納されています")
+        }
+    }
+
     private func recordRow(
         icon: String,
         tint: Color,
@@ -335,6 +368,14 @@ struct SyncStatusView: View {
         return hours > 0 ? "\(hours)時間\(minutes)分" : "\(minutes)分"
     }
 
+    private func activitySummary(_ row: RecentActivityRow) -> String {
+        let parts = [
+            row.activeCaloriesKcal.map { String(format: "アクティブ %.0f kcal", $0) },
+            row.basalCaloriesKcal.map { String(format: "基礎 %.0f kcal", $0) },
+        ].compactMap { $0 }
+        return parts.isEmpty ? "-" : parts.joined(separator: " / ")
+    }
+
     private static let isoWithFraction: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -383,8 +424,19 @@ struct SyncStatusView: View {
                     .value
             } catch { return [] }
         }()
+        async let activity: [RecentActivityRow] = {
+            do {
+                return try await client.from("daily_activity_summary")
+                    .select("id, date, active_calories_kcal, basal_calories_kcal")
+                    .order("date", ascending: false)
+                    .limit(10)
+                    .execute()
+                    .value
+            } catch { return [] }
+        }()
         recentWorkouts = await workouts
         recentBody = await body
         recentSleep = await sleep
+        recentActivity = await activity
     }
 }

@@ -12,6 +12,7 @@ final class SyncEngine {
     private(set) var lastSyncedBodyCount = 0
     private(set) var lastSyncedSleepCount = 0
     private(set) var lastSyncedSleepDeletedCount = 0
+    private(set) var lastSyncedDailyActivityCount = 0
     private(set) var lastError: String?
 
     private let store = HKHealthStore()
@@ -55,6 +56,7 @@ final class SyncEngine {
             lastSyncedWorkoutCount = try await syncWorkouts(userId: userId)
             lastSyncedBodyCount = try await syncBodyComposition(userId: userId)
             lastSyncedSleepCount = try await syncSleepSegments(userId: userId)
+            lastSyncedDailyActivityCount = try await syncDailyActivitySummary(userId: userId)
             lastSyncAt = .now
             UserDefaults.standard.set(lastSyncAt, forKey: "lastSyncAt")
             lastError = nil
@@ -128,6 +130,18 @@ final class SyncEngine {
         }
 
         lastSyncedSleepDeletedCount = deletedUUIDs.count
+        return records.count
+    }
+
+    private func syncDailyActivitySummary(userId: UUID) async throws -> Int {
+        let fetcher = DailyActivityFetcher(store: store)
+        let days = try await fetcher.fetchFinalizedDays()
+        let records = DailyActivityMapper.records(from: days, userId: userId)
+        if !records.isEmpty {
+            try await client.from("daily_activity_summary")
+                .upsert(records, onConflict: "user_id,date")
+                .execute()
+        }
         return records.count
     }
 }
