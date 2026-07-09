@@ -72,13 +72,6 @@ final class SyncEngine {
         let backfillWorkouts = try await fetcher.fetchBackfillWorkouts()
         let workouts = WorkoutFetcher.merging(result.workouts, with: backfillWorkouts)
 
-        if !result.deletedUUIDs.isEmpty {
-            try await client.from("training_log")
-                .delete()
-                .in("healthkit_uuid", values: result.deletedUUIDs)
-                .execute()
-        }
-
         let hrFetcher = WorkoutHeartRateFetcher(store: store)
         let boundaries = hrFetcher.loadZoneBoundaries(referenceDate: .now)
 
@@ -114,6 +107,25 @@ final class SyncEngine {
                 .upsert(records, onConflict: "user_id,start_time,end_time,workout_type")
                 .execute()
         }
+
+        // 削除通知の処理は必ず論理キーupsertの後に行う（Issue #12）。
+        // Garmin等のUUID差し替えでは deletedObjects に旧UUIDが載るが、差し替え後の
+        // ワークアウトが同一バッチにあれば、upsertが既存行の healthkit_uuid を
+        // 新UUIDへ更新済みのため、旧UUIDでのDELETEは何も消さない（追記が保持される）。
+        // 差し替えの片割れが後続バッチで届くケースに備え、会話で追記された列を持つ行は
+        // 削除対象から外す。残った行は後続の論理キーupsertで新UUIDへ更新されて1行に収まる。
+        if !result.deletedUUIDs.isEmpty {
+            try await client.from("training_log")
+                .delete()
+                .in("healthkit_uuid", values: result.deletedUUIDs)
+                .is("rpe", value: nil)
+                .is("condition_notes", value: nil)
+                .is("surface", value: nil)
+                .is("notes", value: nil)
+                .is("equipment", value: nil)
+                .execute()
+        }
+
         if let newAnchor = result.newAnchor {
             WorkoutAnchorStore.save(newAnchor)
         }
