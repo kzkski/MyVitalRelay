@@ -8,11 +8,13 @@ struct TrainingLogRecord: Codable, Identifiable, Hashable {
         var sourceName: String
         var sourceBundleId: String
         var indoorWorkout: Bool?
+        var hrZoneSource: String?
 
         enum CodingKeys: String, CodingKey {
             case sourceName = "source_name"
             case sourceBundleId = "source_bundle_id"
             case indoorWorkout = "indoor_workout"
+            case hrZoneSource = "hr_zone_source"
         }
     }
 
@@ -30,6 +32,7 @@ struct TrainingLogRecord: Codable, Identifiable, Hashable {
     var caloriesBurned: Double?
     var avgHr: Double?
     var maxHr: Double?
+    var hrZoneMinutes: HRZoneMinutes?
     var elevationGainM: Double?
     var strokeCount: Double?
     var metadata: Metadata
@@ -52,6 +55,7 @@ struct TrainingLogRecord: Codable, Identifiable, Hashable {
         case caloriesBurned = "calories_burned"
         case avgHr = "avg_hr"
         case maxHr = "max_hr"
+        case hrZoneMinutes = "hr_zone_minutes"
         case elevationGainM = "elevation_gain_m"
         case strokeCount = "stroke_count"
         case metadata

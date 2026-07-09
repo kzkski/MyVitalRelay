@@ -69,6 +69,8 @@ final class SyncEngine {
     private func syncWorkouts(userId: UUID) async throws -> Int {
         let fetcher = WorkoutFetcher(store: store)
         let result = try await fetcher.fetchNewWorkouts(after: WorkoutAnchorStore.load())
+        let backfillWorkouts = try await fetcher.fetchBackfillWorkouts()
+        let workouts = WorkoutFetcher.merging(result.workouts, with: backfillWorkouts)
 
         if !result.deletedUUIDs.isEmpty {
             try await client.from("training_log")
@@ -77,8 +79,35 @@ final class SyncEngine {
                 .execute()
         }
 
-        let records = result.workouts.map {
-            WorkoutMapper.record(from: WorkoutSnapshot(workout: $0), userId: userId)
+        let hrFetcher = WorkoutHeartRateFetcher(store: store)
+        let boundaries = hrFetcher.loadZoneBoundaries(referenceDate: .now)
+
+        var snapshots: [WorkoutSnapshot] = []
+        snapshots.reserveCapacity(workouts.count)
+
+        for workout in workouts {
+            var snapshot = WorkoutSnapshot(workout: workout)
+
+            do {
+                let enrichment = try await hrFetcher.enrich(
+                    workout: workout,
+                    statisticsAvg: snapshot.avgHeartRate,
+                    statisticsMax: snapshot.maxHeartRate,
+                    boundaries: boundaries
+                )
+                snapshot.avgHeartRate = enrichment.avgBpm
+                snapshot.maxHeartRate = enrichment.maxBpm
+                snapshot.hrZoneMinutes = enrichment.zoneMinutes
+                snapshot.hrZoneSource = enrichment.zoneSource
+            } catch {
+                // 個別ワークアウトのHR取得失敗時はstatisticsベースのまま同期を続行する。
+            }
+
+            snapshots.append(snapshot)
+        }
+
+        let records = snapshots.map {
+            WorkoutMapper.record(from: $0, userId: userId)
         }
         if !records.isEmpty {
             try await client.from("training_log")

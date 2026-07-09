@@ -14,6 +14,8 @@ struct WorkoutSnapshot {
     var activeEnergyKcal: Double?
     var avgHeartRate: Double?
     var maxHeartRate: Double?
+    var hrZoneMinutes: HRZoneMinutes?
+    var hrZoneSource: HeartRateZoneBoundaries.Source?
     var elevationAscendedMeters: Double?
     var strokeCount: Double?
     var isIndoorWorkout: Bool?

@@ -16,6 +16,8 @@ final class WorkoutMapperTests: XCTestCase {
         activeEnergyKcal: Double? = 600,
         avgHeartRate: Double? = 145,
         maxHeartRate: Double? = 165,
+        hrZoneMinutes: HRZoneMinutes? = nil,
+        hrZoneSource: HeartRateZoneBoundaries.Source? = nil,
         elevationAscendedMeters: Double? = 42,
         strokeCount: Double? = nil,
         isIndoorWorkout: Bool? = nil
@@ -32,6 +34,8 @@ final class WorkoutMapperTests: XCTestCase {
             activeEnergyKcal: activeEnergyKcal,
             avgHeartRate: avgHeartRate,
             maxHeartRate: maxHeartRate,
+            hrZoneMinutes: hrZoneMinutes,
+            hrZoneSource: hrZoneSource,
             elevationAscendedMeters: elevationAscendedMeters,
             strokeCount: strokeCount,
             isIndoorWorkout: isIndoorWorkout
@@ -107,6 +111,33 @@ final class WorkoutMapperTests: XCTestCase {
         XCTAssertEqual(WorkoutMapper.discipline(for: .cycling), "bike")
         XCTAssertEqual(WorkoutMapper.discipline(for: .swimming), "swim")
         XCTAssertEqual(WorkoutMapper.discipline(for: .yoga), "other")
+    }
+
+    func testHrZoneMinutesAndSourcePassthrough() {
+        let zones: HRZoneMinutes = [
+            "zone1": 5.0,
+            "zone2": 20.0,
+            "zone3": 15.0,
+            "zone4": 8.0,
+            "zone5": 2.0
+        ]
+        let record = WorkoutMapper.record(
+            from: makeSnapshot(hrZoneMinutes: zones, hrZoneSource: .fixedDefault),
+            userId: userId
+        )
+
+        XCTAssertEqual(record.hrZoneMinutes, zones)
+        XCTAssertEqual(record.metadata.hrZoneSource, "fixed_default")
+    }
+
+    func testHrZoneSourceOmittedWhenNoZones() {
+        let record = WorkoutMapper.record(
+            from: makeSnapshot(avgHeartRate: nil, maxHeartRate: nil),
+            userId: userId
+        )
+
+        XCTAssertNil(record.hrZoneMinutes)
+        XCTAssertNil(record.metadata.hrZoneSource)
     }
 
     func testLogicalKeyIsStableAcrossDifferentUUIDs() {
