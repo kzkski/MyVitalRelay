@@ -43,12 +43,14 @@ enum WorkoutMapper {
             caloriesBurned: snapshot.activeEnergyKcal,
             avgHr: snapshot.avgHeartRate,
             maxHr: snapshot.maxHeartRate,
+            hrZoneMinutes: snapshot.hrZoneMinutes,
             elevationGainM: snapshot.elevationAscendedMeters,
             strokeCount: snapshot.strokeCount,
             metadata: .init(
                 sourceName: snapshot.sourceName,
                 sourceBundleId: snapshot.sourceBundleId,
-                indoorWorkout: snapshot.isIndoorWorkout
+                indoorWorkout: snapshot.isIndoorWorkout,
+                hrZoneSource: snapshot.hrZoneSource?.rawValue
             ),
             updatedAt: timestampString(now)
         )

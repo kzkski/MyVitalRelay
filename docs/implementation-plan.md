@@ -14,7 +14,7 @@
 
 追加の技術前提:
 
-- **SwiftUI／Swift 5.10+／最低デプロイターゲット iOS 17**（async/await・Observation前提。Kazukiさんの実機は最新iOSの想定だが、iOS 27専用API `HKWorkoutZoneGroup` には依存しない → `hr_zone_minutes` は当面常にNULL）
+- **SwiftUI／Swift 5.10+／最低デプロイターゲット iOS 17**（async/await・Observation前提。`hr_zone_minutes` は心拍サンプルのゾーンバケット集計で同期。iOS 27 `HKWorkoutZoneGroup` は将来対応）
 - 依存パッケージは **supabase-swift（SPM）のみ**。それ以外の外部依存は持たない
 - この環境（Linux）ではビルド・実機検証ができないため、**ビルドと実機テストはKazukiさんのMac／iPhoneで実施**。そのための手順書（README）を成果物に含める
 
@@ -96,7 +96,8 @@ MyVitalRelay/
 | `avg_hr` / `max_hr` | heartRate 統計値（Life Fitness由来は自然にNULL） |
 | `elevation_gain_m` | `HKMetadataKeyElevationAscended`（なければNULL） |
 | `stroke_count` | swimmingStrokeCount 統計値（水泳のみ） |
-| `cadence` / `power_watts` / `stroke_style` / `hr_zone_minutes` | **MVPでは常にNULL**（cadenceはHKWorkoutから直接取れないため、将来stepCountサンプル集計で対応する余地をREADMEに記録） |
+| `cadence` / `power_watts` / `stroke_style` | **MVPでは常にNULL**（cadenceはHKWorkoutから直接取れないため、将来stepCountサンプル集計で対応する余地をREADMEに記録） |
+| `hr_zone_minutes` | ワークアウト時間帯の心拍サンプルをゾーン別集計（`metadata.hr_zone_source` で境界ソースを記録） |
 | `equipment` / `surface` / `rpe` / `condition_notes` / `notes` | NULL（チャット運用・手動記入領域） |
 | `metadata` | `source_name`・`source_bundle_id`・`HKMetadataKeyIndoorWorkout` の実値など、未マッピング情報の受け皿。**引き継ぎ6節の未検証事項（Life Fitnessの書き込み項目・indoorメタデータの実態）をここに生ログとして貯めて実機確認に使う** |
 
@@ -279,7 +280,7 @@ MyVitalRelay/
 ## 2. スコープ外
 
 - Garmin/Life Fitness直接API連携（フェーズ2候補として保留のまま）
-- `hr_zone_minutes` の実装（iOS 27の`HKWorkoutZoneGroup`一般提供後）
+- iOS 27 `HKWorkoutZoneGroup` / `preferredWorkoutZoneConfiguration` によるゾーン取得（将来 issue）
 - **`daily_summary` の自動集計・AI ツール実装** — フェーズ4では生データ同期まで。集計はケトログ側で任意タイミング
 - 手動記録UI・ダッシュボード・`rpe`/`condition_notes`のアプリ入力
 
