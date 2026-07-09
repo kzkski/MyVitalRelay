@@ -140,6 +140,24 @@ final class WorkoutMapperTests: XCTestCase {
         XCTAssertNil(record.metadata.hrZoneSource)
     }
 
+    func testEncodeExcludesManualAnnotationColumns() throws {
+        // rpe / condition_notes / surface / notes / equipment は会話で記入される列。
+        // ペイロードに含めると論理キーupsertのUPDATE経路で上書き消去されるため、
+        // エンコード結果に絶対に含まれないことを固定する（Issue #12）。
+        let record = WorkoutMapper.record(from: makeSnapshot(), userId: userId)
+
+        let data = try JSONEncoder().encode(record)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        XCTAssertTrue(json.contains("\"healthkit_uuid\""))
+        XCTAssertFalse(json.contains("\"rpe\""))
+        XCTAssertFalse(json.contains("\"condition_notes\""))
+        XCTAssertFalse(json.contains("\"surface\""))
+        XCTAssertFalse(json.contains("\"notes\""))
+        XCTAssertFalse(json.contains("\"equipment\""))
+        XCTAssertFalse(json.contains("\"id\""))
+    }
+
     func testLogicalKeyIsStableAcrossDifferentUUIDs() {
         let base = makeSnapshot(uuid: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!)
         let other = makeSnapshot(uuid: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!)
