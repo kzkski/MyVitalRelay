@@ -160,9 +160,12 @@ GET /rest/v1/garmin_activity_archive?select=garmin_activity_id,synced_at&start_t
 | FIT パース JSON | `garmin_activity_archive.fit_parsed` JSONB | ✅ |
 | API 全レスポンス | `garmin_activity_archive.api_responses` JSONB | ✅ |
 | 日次 API 全レスポンス | `garmin_daily_archive.api_responses` JSONB | ✅ |
-| 分析用サマリー | View `garmin_activity_claude` | ✅ 推奨 |
+| 分析用サマリー | View `garmin_activity_claude_summary` | ✅ 一覧・会話開始時 |
+| 分析用詳細 | View `garmin_activity_claude` | ✅ 単一 activity 深掘り |
 
-同期ジョブ内で `fitparse` 等により FIT → JSON 変換。**Claude は JSONB のみ SELECT** する。
+大型 JSON（512KB 超）は Storage 退避。View の `fit_parsed_in_storage` / `api_responses_in_storage` で判定。
+
+同期ジョブ: `scripts/garmin_sync_job.py`。運用: `docs/garmin-sync-ops.md`。
 
 ### 5.2 `garmin_activity_archive`（Claude 読取対象）
 
@@ -189,51 +192,21 @@ CREATE TABLE garmin_activity_archive (
 );
 ```
 
-### 5.3 View: `garmin_activity_claude`
+### 5.3 View: 2 段構成
 
-分析開始時に **まずこの View** を読む。`training_log` との JOIN も可能。
-
-```sql
-CREATE VIEW garmin_activity_claude
-WITH (security_invoker = true)
-AS
-SELECT
-  a.id,
-  a.user_id,
-  a.garmin_activity_id,
-  a.activity_type_key,
-  a.activity_name,
-  a.start_time_local,
-  a.duration_sec,
-  a.synced_at,
-  -- training_log リンク
-  a.training_log_id,
-  t.date AS training_log_date,
-  t.discipline,
-  t.distance_km,
-  t.avg_hr,
-  t.rpe,
-  t.condition_notes,
-  -- フラットな分析用フィールド（summary から抽出）
-  a.summary->>'averageHR' AS avg_hr_garmin,
-  (a.summary->>'distance')::numeric AS distance_m,
-  a.summary->>'averageRunningCadenceInStepsPerMinute' AS cadence_spm,
-  a.summary->>'avgPower' AS avg_power_w,
-  a.summary->>'aerobicTrainingEffect' AS aerobic_te,
-  a.summary->>'activityTrainingLoad' AS training_load,
-  -- 詳細は JSONB 列をそのまま返す（Claude が深掘り）
-  a.summary,
-  a.fit_parsed,
-  a.api_responses
-FROM garmin_activity_archive a
-LEFT JOIN training_log t ON t.id = a.training_log_id;
-```
-
-PostgREST:
+**一覧・会話開始:** `garmin_activity_claude_summary`（軽量、JSONB なし）
 
 ```http
-GET /rest/v1/garmin_activity_claude?training_log_date=eq.2026-07-10&select=activity_name,cadence_spm,avg_power_w,api_responses->get_activity_splits
+GET /rest/v1/garmin_activity_claude_summary?training_log_date=eq.2026-07-10&select=activity_name,cadence_spm,avg_power_w,training_log_id
 ```
+
+**単一 activity 深掘り:** `garmin_activity_claude`（`garmin_activity_id` で絞る）
+
+```http
+GET /rest/v1/garmin_activity_claude?garmin_activity_id=eq.19876543210&select=activity_name,summary,fit_parsed,api_responses
+```
+
+PostgREST では `api_responses->get_activity_splits` のような JSON path フィルタは使えない。深掘り時は `api_responses` 列全体を select し、Claude が JSON 内を解析する。
 
 ### 5.4 日次: `garmin_daily_claude`
 
@@ -262,7 +235,7 @@ FROM garmin_daily_archive;
 1. `training_log` で対象セッション特定（`data_source=garmin`）
 2. `garmin_activity_claude?training_log_id=eq.{id}` を確認
 3. 無ければ `garmin_sync_request` を INSERT（`date_from`/`date_to` をその日 ±1 日）
-4. `status=complete` までポーリング（最大 2〜3 分、ユーザーに待機を伝える）
+4. `status=complete` までポーリング（**Webhook 未設定時は最大 10 分**。ユーザーに待機を伝える）
 5. `api_responses->get_activity_splits` / `fit_parsed->laps` 等でラップ分析
 6. `training_log.rpe` / `condition_notes` と Garmin 客観データを統合して回答
 

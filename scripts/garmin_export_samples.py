@@ -80,6 +80,7 @@ def _register_fetchers() -> None:
         "get_running_tolerance": lambda api, d: api.get_running_tolerance(d),
         "get_body_composition": lambda api, d: api.get_body_composition(d),
         "get_floors": lambda api, d: api.get_floors(d),
+        "get_daily_steps": lambda api, d: api.get_daily_steps(d, d),
         "get_lifestyle_logging_data": lambda api, d: api.get_lifestyle_logging_data(d),
     }
 

@@ -1,9 +1,49 @@
 -- Garmin 同期: Claude トリガー + JSON アーカイブ（Issue #15）
--- 設計: docs/claude-garmin-access.md
--- ※本番適用前に get_advisors で RLS 確認
+-- 設計: docs/claude-garmin-access.md, docs/garmin-sync-ops.md
+-- ※本番適用前に get_advisors で RLS / Storage 確認
 
 -- ---------------------------------------------------------------------------
--- 1. 同期リクエスト（Claude が INSERT → ジョブが処理）
+-- 0. Storage バケット（FIT 原データ + 大型 JSON）
+-- ---------------------------------------------------------------------------
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES
+  ('garmin-fit', 'garmin-fit', false, 52428800, ARRAY['application/zip', 'application/octet-stream']),
+  ('garmin-json', 'garmin-json', false, 52428800, ARRAY['application/json'])
+ON CONFLICT (id) DO NOTHING;
+
+-- 本人のみ読取（パス先頭 = user_id）
+CREATE POLICY garmin_fit_owner_read ON storage.objects
+  FOR SELECT TO authenticated
+  USING (
+    bucket_id = 'garmin-fit'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+CREATE POLICY garmin_json_owner_read ON storage.objects
+  FOR SELECT TO authenticated
+  USING (
+    bucket_id = 'garmin-json'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- 書込は service_role（Sync Job）のみ — authenticated からの INSERT/UPDATE ポリシーは作らない
+
+-- ---------------------------------------------------------------------------
+-- 1. Garmin OAuth トークン（GHA 実行間で DI token を永続化）
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE garmin_oauth_tokens (
+  user_id uuid PRIMARY KEY REFERENCES auth.users(id),
+  token_store jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE garmin_oauth_tokens ENABLE ROW LEVEL SECURITY;
+-- ポリシーなし: authenticated から不可。Sync Job（service_role）のみ。
+
+-- ---------------------------------------------------------------------------
+-- 2. 同期リクエスト
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE garmin_sync_request (
@@ -24,7 +64,6 @@ CREATE TABLE garmin_sync_request (
   CHECK (date_from <= date_to)
 );
 
--- 同一ユーザー・期間・scope の pending が重複しない（HealthKit 連続同期対策）
 CREATE UNIQUE INDEX idx_garmin_sync_request_pending_dedup
   ON garmin_sync_request (user_id, scope, date_from, date_to)
   WHERE status = 'pending';
@@ -32,6 +71,9 @@ CREATE UNIQUE INDEX idx_garmin_sync_request_pending_dedup
 CREATE INDEX idx_garmin_sync_request_pending
   ON garmin_sync_request (requested_at)
   WHERE status = 'pending';
+
+CREATE INDEX idx_garmin_sync_request_user_status
+  ON garmin_sync_request (user_id, status, requested_at);
 
 ALTER TABLE garmin_sync_request ENABLE ROW LEVEL SECURITY;
 
@@ -41,10 +83,10 @@ CREATE POLICY garmin_sync_request_owner_select ON garmin_sync_request
 CREATE POLICY garmin_sync_request_owner_insert ON garmin_sync_request
   FOR INSERT WITH CHECK (auth.uid() = user_id);
 
--- UPDATE は service_role（Sync Job）のみ。authenticated からの UPDATE は許可しない。
+-- UPDATE は service_role（Sync Job）のみ
 
 -- ---------------------------------------------------------------------------
--- 2. アクティビティアーカイブ
+-- 3. アクティビティアーカイブ
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE garmin_activity_archive (
@@ -59,6 +101,8 @@ CREATE TABLE garmin_activity_archive (
   fit_parsed jsonb NOT NULL DEFAULT '{}'::jsonb,
   api_responses jsonb NOT NULL DEFAULT '{}'::jsonb,
   fit_storage_path text,
+  fit_parsed_storage_path text,
+  api_json_storage_path text,
   training_log_id uuid REFERENCES training_log(id),
   sync_request_id uuid REFERENCES garmin_sync_request(id),
   sync_status text NOT NULL DEFAULT 'complete'
@@ -71,15 +115,17 @@ CREATE TABLE garmin_activity_archive (
 CREATE INDEX idx_garmin_activity_archive_user_start
   ON garmin_activity_archive (user_id, start_time_local);
 
+CREATE INDEX idx_garmin_activity_archive_unlinked
+  ON garmin_activity_archive (user_id, start_time_local)
+  WHERE training_log_id IS NULL;
+
 ALTER TABLE garmin_activity_archive ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY garmin_activity_archive_owner ON garmin_activity_archive
   FOR SELECT USING (auth.uid() = user_id);
 
--- INSERT/UPDATE は service_role（Sync Job）のみ
-
 -- ---------------------------------------------------------------------------
--- 3. 日次アーカイブ
+-- 4. 日次アーカイブ（Phase 1.5 で job 実装。DDL のみ先行）
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE garmin_daily_archive (
@@ -87,6 +133,7 @@ CREATE TABLE garmin_daily_archive (
   user_id uuid NOT NULL REFERENCES auth.users(id),
   date date NOT NULL,
   api_responses jsonb NOT NULL DEFAULT '{}'::jsonb,
+  api_json_storage_path text,
   sync_request_id uuid REFERENCES garmin_sync_request(id),
   sync_status text NOT NULL DEFAULT 'complete'
     CHECK (sync_status IN ('complete', 'partial', 'failed')),
@@ -101,10 +148,74 @@ CREATE POLICY garmin_daily_archive_owner ON garmin_daily_archive
   FOR SELECT USING (auth.uid() = user_id);
 
 -- ---------------------------------------------------------------------------
--- 4. Claude 向け View（security_invoker = RLS 継承）
+-- 5. ジョブ用ヘルパー
 -- ---------------------------------------------------------------------------
 
-CREATE VIEW garmin_activity_claude
+-- 30 分以上 running のままのリクエストを pending に戻す（クラッシュ復旧）
+CREATE OR REPLACE FUNCTION reset_stale_garmin_sync_requests(stale_minutes integer DEFAULT 30)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  affected integer;
+BEGIN
+  UPDATE garmin_sync_request
+  SET status = 'pending',
+      started_at = NULL,
+      error_message = COALESCE(error_message, '') || ' [stale running reset]'
+  WHERE status = 'running'
+    AND started_at < now() - (stale_minutes || ' minutes')::interval;
+
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  RETURN affected;
+END;
+$$;
+
+-- garmin_activity_archive ↔ training_log 参照リンク（±120 秒許容）
+CREATE OR REPLACE FUNCTION link_garmin_activity_training_log(p_user_id uuid)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  affected integer;
+BEGIN
+  UPDATE garmin_activity_archive a
+  SET training_log_id = t.id
+  FROM training_log t
+  WHERE a.user_id = p_user_id
+    AND t.user_id = p_user_id
+    AND t.data_source = 'garmin'
+    AND a.training_log_id IS NULL
+    AND a.start_time_local IS NOT NULL
+    AND t.start_time IS NOT NULL
+    AND t.start_time BETWEEN a.start_time_local - interval '120 seconds'
+                         AND a.start_time_local + interval '120 seconds'
+    AND (
+      a.duration_sec IS NULL
+      OR t.duration_min IS NULL
+      OR abs(t.duration_min * 60 - a.duration_sec) <= 120
+    );
+
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  RETURN affected;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION reset_stale_garmin_sync_requests(integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION link_garmin_activity_training_log(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reset_stale_garmin_sync_requests(integer) TO service_role;
+GRANT EXECUTE ON FUNCTION link_garmin_activity_training_log(uuid) TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- 6. Claude 向け View
+-- ---------------------------------------------------------------------------
+
+-- 軽量: 一覧・会話開始時はこちら
+CREATE VIEW garmin_activity_claude_summary
 WITH (security_invoker = true)
 AS
 SELECT
@@ -116,6 +227,7 @@ SELECT
   a.start_time_local,
   a.duration_sec,
   a.synced_at,
+  a.sync_status,
   a.training_log_id,
   t.date AS training_log_date,
   t.discipline,
@@ -129,11 +241,25 @@ SELECT
   a.summary->>'avgPower' AS avg_power_w,
   a.summary->>'aerobicTrainingEffect' AS aerobic_te,
   a.summary->>'activityTrainingLoad' AS training_load,
-  a.summary,
-  a.fit_parsed,
-  a.api_responses
+  (a.fit_parsed = '{}'::jsonb AND a.fit_parsed_storage_path IS NOT NULL) AS fit_parsed_in_storage,
+  (a.api_responses = '{}'::jsonb AND a.api_json_storage_path IS NOT NULL) AS api_responses_in_storage
 FROM garmin_activity_archive a
 LEFT JOIN training_log t ON t.id = a.training_log_id;
+
+-- 詳細: 単一 activity の深掘り時（garmin_activity_id で絞る）
+CREATE VIEW garmin_activity_claude
+WITH (security_invoker = true)
+AS
+SELECT
+  s.*,
+  a.summary,
+  a.fit_parsed,
+  a.api_responses,
+  a.fit_storage_path,
+  a.fit_parsed_storage_path,
+  a.api_json_storage_path
+FROM garmin_activity_claude_summary s
+JOIN garmin_activity_archive a ON a.id = s.id;
 
 CREATE VIEW garmin_daily_claude
 WITH (security_invoker = true)
@@ -142,12 +268,15 @@ SELECT
   user_id,
   date,
   synced_at,
+  sync_status,
   api_responses->'get_training_readiness' AS training_readiness,
   api_responses->'get_hrv_data' AS hrv,
   api_responses->'get_body_battery' AS body_battery,
   api_responses->'get_sleep_data' AS sleep,
+  api_json_storage_path,
   api_responses
 FROM garmin_daily_archive;
 
+GRANT SELECT ON garmin_activity_claude_summary TO authenticated;
 GRANT SELECT ON garmin_activity_claude TO authenticated;
 GRANT SELECT ON garmin_daily_claude TO authenticated;

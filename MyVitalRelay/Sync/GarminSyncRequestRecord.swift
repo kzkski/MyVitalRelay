@@ -1,4 +1,8 @@
 import Foundation
+import os
+import Supabase
+
+private let garminSyncLogger = Logger(subsystem: "tv.civictech.MyVitalRelay", category: "GarminSync")
 
 /// garmin_sync_request 行。HealthKit 検知 or Claude 会話から INSERT される。
 struct GarminSyncRequestRecord: Codable {
@@ -14,7 +18,6 @@ struct GarminSyncRequestRecord: Codable {
         case triggerSource = "trigger_source"
     }
 
-    /// MyVitalRelay が Garmin 由来ワークアウト同期後に発行。
     static func healthKitActivities(dateFrom: String, dateTo: String) -> Self {
         Self(scope: "activities", dateFrom: dateFrom, dateTo: dateTo, triggerSource: "healthkit")
     }
@@ -22,7 +25,6 @@ struct GarminSyncRequestRecord: Codable {
 
 enum GarminSyncRequestEnqueuer {
     /// Garmin 由来 training_log の upsert 成功後に FIT 取得キューを投入する。
-    /// 失敗してもワークアウト同期は成功扱いのまま（テーブル未作成・重複等）。
     static func enqueueActivitiesIfNeeded(
         client: SupabaseClient,
         garminRecords: [TrainingLogRecord]
@@ -41,8 +43,21 @@ enum GarminSyncRequestEnqueuer {
             try await client.from("garmin_sync_request")
                 .insert(request)
                 .execute()
+            garminSyncLogger.info("Enqueued garmin_sync_request activities \(dateFrom)...\(dateTo)")
         } catch {
-            // pending 重複（部分 UNIQUE）・マイグレーション未適用等は無視
+            if Self.isPendingDuplicateError(error) {
+                garminSyncLogger.debug("Garmin sync request already pending for \(dateFrom)...\(dateTo)")
+                return
+            }
+            garminSyncLogger.error("Failed to enqueue garmin_sync_request: \(error.localizedDescription)")
         }
+    }
+
+    /// 部分 UNIQUE（pending dedup）による重複 INSERT。
+    private static func isPendingDuplicateError(_ error: Error) -> Bool {
+        let message = String(describing: error).lowercased()
+        return message.contains("23505")
+            || message.contains("duplicate")
+            || message.contains("unique constraint")
     }
 }
