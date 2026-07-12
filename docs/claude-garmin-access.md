@@ -1,0 +1,327 @@
+# Claude 向け Garmin データアクセス設計
+
+作成日: 2026-07-12  
+前提: ケトログ Claude 連携（`refresh_token` → PostgREST + RLS）  
+関連: `docs/garmin-api-sync-investigation.md`
+
+---
+
+## 1. 設計ゴール
+
+| 要件 | 方針 |
+|---|---|
+| トリガーで取得 | Claude が **同期リクエストを発行** → ジョブが実行 → 完了後に読み取り |
+| Claude から分析 | **Postgres JSONB + View**（FIT バイナリは Claude 非対応のため同期時に JSON 化） |
+| 個人 1〜2 人 | 汎用 UI 不要。テーブル + ドキュメントで足りる |
+
+---
+
+## 2. Claude の既存アクセス経路（ketolog）
+
+ケトログ v1.66+ の Claude 連携は **MCP ではなく Supabase REST** を直接叩く:
+
+1. ketolog 設定画面で refresh_token を発行
+2. `POST /auth/v1/token?grant_type=refresh_token` → access_token
+3. `GET /rest/v1/{table}?select=...` + Bearer（RLS で本人データのみ）
+
+既に Claude が読んでいる例:
+
+```http
+GET /rest/v1/training_log?select=*&date=gte.2026-07-01&order=start_time.desc
+GET /rest/v1/food_log?select=*&date=eq.2026-07-10
+```
+
+Garmin 詳細も **同じ経路** で読めるようにする（新テーブル + View）。
+
+---
+
+## 3. 全体フロー
+
+```
+┌─────────────┐
+│   Claude    │
+│ (会話中)     │
+└──────┬──────┘
+       │ ① INSERT garmin_sync_request (pending)
+       │ ② GET garmin_sync_request?status=eq.complete (ポーリング)
+       │ ③ GET garmin_activity_claude / garmin_daily_claude
+       ▼
+┌─────────────────────────────────────┐
+│ Supabase Postgres (RLS)             │
+│  garmin_sync_request  ← トリガーキュー │
+│  garmin_activity_archive            │
+│  garmin_daily_archive               │
+│  garmin_activity_claude (VIEW)      │
+└──────────────▲──────────────────────┘
+               │ service_role で書込
+┌──────────────┴──────────────────────┐
+│ Garmin Sync Job (Python)            │
+│  GitHub Actions workflow_dispatch   │
+│  + 10分 cron（pending キュー処理）    │
+└──────────────▲──────────────────────┘
+               │ python-garminconnect
+┌──────────────┴──────────────────────┐
+│ Garmin Connect API + FIT download   │
+└─────────────────────────────────────┘
+```
+
+**ポイント:** Claude は Supabase だけ触る。Garmin 認証情報はジョブ側 Secrets に閉じる。
+
+---
+
+## 4. トリガー: `garmin_sync_request`
+
+Claude が同期を **依頼するキュー**。
+
+### 4.1 スキーマ
+
+```sql
+CREATE TABLE garmin_sync_request (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id),
+  scope text NOT NULL CHECK (scope IN ('activities', 'daily', 'all')),
+  date_from date NOT NULL,
+  date_to date NOT NULL,
+  status text NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'running', 'complete', 'partial', 'failed')),
+  progress jsonb NOT NULL DEFAULT '{}'::jsonb,
+  error_message text,
+  requested_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
+  completed_at timestamptz
+);
+```
+
+### 4.2 Claude の操作例
+
+**同期依頼（先週のアクティビティ）:**
+
+```http
+POST /rest/v1/garmin_sync_request
+Content-Type: application/json
+Prefer: return=representation
+
+{
+  "scope": "activities",
+  "date_from": "2026-07-05",
+  "date_to": "2026-07-11"
+}
+```
+
+`user_id` は RLS / default trigger で自動付与（実装時に `auth.uid()` default または DB trigger）。
+
+**進捗確認:**
+
+```http
+GET /rest/v1/garmin_sync_request?id=eq.{request_id}&select=id,status,progress,error_message,completed_at
+```
+
+**既存データ確認（同期不要か判断）:**
+
+```http
+GET /rest/v1/garmin_activity_archive?select=garmin_activity_id,synced_at&start_time_local=gte.2026-07-05T00:00:00+09:00&start_time_local=lte.2026-07-11T23:59:59+09:00
+```
+
+→ 期間内の activity が揃っていれば ① をスキップして ③ へ。
+
+### 4.3 ジョブ側
+
+| トリガー | 動作 |
+|---|---|
+| **cron 10分** | `status=pending` を 1 件ずつ `running` → 同期 → `complete` |
+| **workflow_dispatch** | 手動 / Claude から即時実行（`request_id` 指定） |
+
+---
+
+## 5. Claude 向けデータ配置
+
+### 5.1 原則
+
+| データ | 保存 | Claude が読む |
+|---|---|---|
+| FIT 原データ (.fit) | Supabase Storage（アーカイブ） | ❌ 直接不可 |
+| FIT パース JSON | `garmin_activity_archive.fit_parsed` JSONB | ✅ |
+| API 全レスポンス | `garmin_activity_archive.api_responses` JSONB | ✅ |
+| 日次 API 全レスポンス | `garmin_daily_archive.api_responses` JSONB | ✅ |
+| 分析用サマリー | View `garmin_activity_claude` | ✅ 推奨 |
+
+同期ジョブ内で `fitparse` 等により FIT → JSON 変換。**Claude は JSONB のみ SELECT** する。
+
+### 5.2 `garmin_activity_archive`（Claude 読取対象）
+
+```sql
+CREATE TABLE garmin_activity_archive (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id),
+  garmin_activity_id bigint NOT NULL,
+  activity_type_key text,
+  activity_name text,
+  start_time_local timestamptz,
+  duration_sec numeric,
+  -- Claude 向け（PostgREST で直接 select 可能）
+  summary jsonb NOT NULL DEFAULT '{}'::jsonb,       -- get_activity の要約
+  fit_parsed jsonb NOT NULL DEFAULT '{}'::jsonb,    -- FIT 全メッセージを JSON 化
+  api_responses jsonb NOT NULL DEFAULT '{}'::jsonb, -- splits / zones / exercise_sets 等
+  -- アーカイブ（Claude 非経由）
+  fit_storage_path text,                            -- Storage 内 zip（原データ保全）
+  training_log_id uuid REFERENCES training_log(id),
+  sync_request_id uuid REFERENCES garmin_sync_request(id),
+  sync_status text NOT NULL DEFAULT 'complete',
+  synced_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (user_id, garmin_activity_id)
+);
+```
+
+### 5.3 View: `garmin_activity_claude`
+
+分析開始時に **まずこの View** を読む。`training_log` との JOIN も可能。
+
+```sql
+CREATE VIEW garmin_activity_claude
+WITH (security_invoker = true)
+AS
+SELECT
+  a.id,
+  a.user_id,
+  a.garmin_activity_id,
+  a.activity_type_key,
+  a.activity_name,
+  a.start_time_local,
+  a.duration_sec,
+  a.synced_at,
+  -- training_log リンク
+  a.training_log_id,
+  t.date AS training_log_date,
+  t.discipline,
+  t.distance_km,
+  t.avg_hr,
+  t.rpe,
+  t.condition_notes,
+  -- フラットな分析用フィールド（summary から抽出）
+  a.summary->>'averageHR' AS avg_hr_garmin,
+  (a.summary->>'distance')::numeric AS distance_m,
+  a.summary->>'averageRunningCadenceInStepsPerMinute' AS cadence_spm,
+  a.summary->>'avgPower' AS avg_power_w,
+  a.summary->>'aerobicTrainingEffect' AS aerobic_te,
+  a.summary->>'activityTrainingLoad' AS training_load,
+  -- 詳細は JSONB 列をそのまま返す（Claude が深掘り）
+  a.summary,
+  a.fit_parsed,
+  a.api_responses
+FROM garmin_activity_archive a
+LEFT JOIN training_log t ON t.id = a.training_log_id;
+```
+
+PostgREST:
+
+```http
+GET /rest/v1/garmin_activity_claude?training_log_date=eq.2026-07-10&select=activity_name,cadence_spm,avg_power_w,api_responses->get_activity_splits
+```
+
+### 5.4 日次: `garmin_daily_claude`
+
+```sql
+CREATE VIEW garmin_daily_claude
+WITH (security_invoker = true)
+AS
+SELECT
+  user_id,
+  date,
+  synced_at,
+  api_responses->'get_training_readiness' AS training_readiness,
+  api_responses->'get_hrv_data' AS hrv,
+  api_responses->'get_body_battery' AS body_battery,
+  api_responses->'get_sleep_data' AS sleep,
+  api_responses
+FROM garmin_daily_archive;
+```
+
+---
+
+## 6. Claude の会話フロー（推奨プロンプト/手順）
+
+### 6.1 ランニング詳細分析
+
+1. `training_log` で対象セッション特定（`data_source=garmin`）
+2. `garmin_activity_claude?training_log_id=eq.{id}` を確認
+3. 無ければ `garmin_sync_request` を INSERT（`date_from`/`date_to` をその日 ±1 日）
+4. `status=complete` までポーリング（最大 2〜3 分、ユーザーに待機を伝える）
+5. `api_responses->get_activity_splits` / `fit_parsed->laps` 等でラップ分析
+6. `training_log.rpe` / `condition_notes` と Garmin 客観データを統合して回答
+
+### 6.2 Training Readiness / 回復
+
+1. `garmin_daily_claude?date=eq.2026-07-12`
+2. 無ければ `garmin_sync_request` scope=`daily`
+3. `training_readiness`, `hrv`, `body_battery` を解釈
+
+---
+
+## 7. FIT → JSON（Claude 向け変換）
+
+同期ジョブ内で実施:
+
+```python
+import fitparse
+
+def fit_to_json(fit_bytes: bytes) -> dict:
+    fit = fitparse.FitFile(BytesIO(fit_bytes))
+    messages = []
+    for msg in fit.get_messages():
+        messages.append({
+            "name": msg.name,
+            "fields": {f.name: f.value for f in msg.fields},
+        })
+    return {"messages": messages, "message_count": len(messages)}
+```
+
+- **全メッセージ保持**（ユーザー要件「FIT 全部」に対応）
+- サイズが大きい場合: `fit_parsed` は Storage に退避し、View には `fit_parsed_storage_path` のみ（閾値 1MB 等）
+- Claude 深掘り時: `GET ...&select=fit_parsed` または splits API 部分だけ select
+
+---
+
+## 8. 即時トリガー（オプション）
+
+cron 10 分待ちが長い場合:
+
+```yaml
+# .github/workflows/garmin-sync.yml
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: garmin_sync_request.id
+        required: true
+  schedule:
+    - cron: '*/10 * * * *'  # pending キュー処理
+```
+
+Claude から即時 dispatch するには、将来 ketolog に薄いプロキシを追加:
+
+```
+POST /api/garmin-sync/trigger  { "request_id": "..." }
+  → GitHub API workflow_dispatch（server-side PAT）
+```
+
+**Phase 1 では cron + 手動 dispatch で十分。** ketolog プロキシは Phase 2。
+
+---
+
+## 9. ケトログ Claude 連携ガイドへの追記案
+
+`packages/domain/src/claude-integration.ts` の `buildClaudeIntegrationUsageGuide()` に追記:
+
+- 利用可能テーブル: `garmin_sync_request`, `garmin_activity_claude`, `garmin_daily_claude`
+- 同期依頼 → 待機 → 分析 の 3 ステップ
+- `training_log` との JOIN 例
+
+---
+
+## 10. Phase 更新
+
+| Phase | 内容 |
+|---|---|
+| **1** | DDL（request + archive + views）+ Sync Job + cron |
+| **2** | FIT parse 込み + Storage アーカイブ |
+| **3** | ketolog ガイド追記 + 即時 trigger API（任意） |

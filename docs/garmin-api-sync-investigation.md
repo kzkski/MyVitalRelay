@@ -14,26 +14,29 @@
 | ユーザー数 | **個人利用**（最大 1〜2 人。汎用マルチテナント化はしない） |
 | 欲しいデータ | **FIT ファイル全量** + **Garmin API から取得できるデータはすべて**（個別フィールド選定はしない） |
 | MyVitalRelay（iOS） | **現状維持**（HealthKit リレーはそのまま） |
+| 分析主体 | **Claude**（ケトログ Claude 連携 → PostgREST + RLS） |
+| 取得タイミング | **オンデマンド**（Claude がトリガー。定期 cron はキュー処理用） |
 
 ---
 
 ## 1. エグゼクティブサマリー
 
-### 結論: **GO — 「生データアーカイブ」方式**
+### 結論: **GO — 「Claude トリガー + JSON アーカイブ」方式**
 
-HealthKit 同期（`training_log` 等）はケトログ向け概要データの**正**として維持し、Garmin Connect からは **FIT 原データ + API 生 JSON を丸ごと保存**する。
+HealthKit 同期（`training_log` 等）は概要データの**正**として維持。Garmin 詳細は **Claude が `garmin_sync_request` を INSERT してトリガー** → Python ジョブが FIT + API を取得 → **Postgres JSONB + View** に保存 → Claude が PostgREST で分析。
 
-フィールド単位の backfill や正規化テーブル（ラップ行・セット行）への分解は **初期スコープ外**。必要な分析は保存済み FIT / JSON から後段（SQL View / AI / バッチ）で行う。
+FIT バイナリは Storage に保全するが、**Claude は JSONB のみ読む**（同期時に FIT を JSON 化）。詳細は **`docs/claude-garmin-access.md`**。
 
 **推奨方向性:**
 
 | レイヤ | 役割 |
 |---|---|
 | MyVitalRelay（iOS） | HealthKit → Supabase（現状維持） |
-| Garmin Sync Job（新規 Python） | Garmin API → Supabase Storage + アーカイブテーブル |
-| `training_log` | HK 正。Garmin とは `garmin_activity_id` / 時刻で**参照リンクのみ**（上書きしない） |
-| Supabase Storage | FIT zip（`ORIGINAL` 形式）+ 必要に応じ大型 JSON |
-| Postgres | アーカイブ索引 + API レスポンス JSONB |
+| **Claude（会話）** | `garmin_sync_request` INSERT → `garmin_activity_claude` SELECT |
+| Garmin Sync Job（Python） | pending キュー処理 + FIT/API 取得 |
+| `training_log` | HK 正。Garmin とは参照リンクのみ |
+| Supabase Storage | FIT zip 原データ（アーカイブ） |
+| Postgres | `fit_parsed` + `api_responses` JSONB、Claude 用 View |
 
 ---
 
@@ -135,19 +138,18 @@ api.download_activity(activity_id, dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL
 ## 5. 推奨アーキテクチャ
 
 ```
-┌──────────────────┐  HealthKit   ┌─────────────────────────────────┐
-│  MyVitalRelay    │ ───────────► │ Supabase Postgres               │
-│  (iOS, 不変)      │              │  training_log / sleep_* / ...   │
-└──────────────────┘              └─────────────────────────────────┘
-                                              ▲
-                                              │ 索引 + JSONB
-┌──────────────────┐  python-garminconnect   │
-│ Garmin Sync Job  │ ─────────────────────────┤
-│ (GitHub Actions  │                          │
-│  or Mac cron)    │ ────────────────────────►│ Supabase Storage
-└──────────────────┘  FIT zip + 大型 JSON     │  garmin-fit/{user_id}/{id}.zip
-                                              │  garmin-json/...
+Claude ──INSERT──► garmin_sync_request (pending)
+  │                      │
+  │                      ▼
+  │               Garmin Sync Job (Python, GHA cron/dispatch)
+  │                      │
+  └──SELECT──◄── garmin_activity_claude (VIEW)
+                 garmin_daily_claude (VIEW)
+                        ▲
+MyVitalRelay ──HK──► training_log ──(link)── garmin_activity_archive
 ```
+
+**Claude アクセス設計の詳細:** `docs/claude-garmin-access.md`
 
 ### 5.1 なぜサーバー側 Python か
 
@@ -269,9 +271,9 @@ CREATE POLICY garmin_daily_archive_owner ON garmin_daily_archive
 
 ### 7.3 実行基盤
 
-- **推奨:** GitHub Actions `schedule`（1日 1〜2 回）+ `workflow_dispatch`
-- 代替: 自宅 Mac cron
-- Secrets: `GARMIN_SYNC_USERS`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`（Storage upload 用）
+- **主トリガー:** Claude → `garmin_sync_request` INSERT（オンデマンド）
+- **ジョブ起動:** GitHub Actions cron（10 分毎、pending 処理）+ `workflow_dispatch`（即時）
+- Secrets: `GARMIN_SYNC_USERS`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 
 ---
 
@@ -279,10 +281,10 @@ CREATE POLICY garmin_daily_archive_owner ON garmin_daily_archive
 
 | Phase | 内容 | 成果 |
 |---|---|---|
-| **0** | `garmin_export_samples.py` ローカル実行 | login 確認、FIT zip 取得確認、JSON サンプル |
-| **1** | DDL + Storage バケット + Sync Job MVP | 直近 7 日分のアクティビティ FIT + JSON |
-| **2** | 日次アーカイブ + 初回バックフィル（90 日） | 過去データの FIT 全取得 |
-| **3** | `training_log` 参照リンク + ケトログ AI 用 View | `garmin_activity_archive` JOIN |
+| **0** | `garmin_export_samples.py` ローカル実行 | login / FIT / JSON サンプル |
+| **1** | DDL（request + archive + Claude View）+ Sync Job | Claude が trigger → read 可能 |
+| **2** | FIT parse + Storage アーカイブ + 日次 | 全データ網羅 |
+| **3** | ketolog Claude ガイド追記 + 即時 trigger API（任意） | UX 改善 |
 
 ---
 

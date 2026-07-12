@@ -1,0 +1,52 @@
+# Garmin Sync Job — Claude トリガー用
+#
+# 起動:
+#   - schedule: pending キューを 10 分毎に処理
+#   - workflow_dispatch: 即時実行（request_id 指定可）
+#
+# Secrets:
+#   GARMIN_SYNC_USERS — JSON array [{supabase_user_id, email, password}]
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY
+
+name: Garmin Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: garmin_sync_request.id（省略時は pending 全件）
+        required: false
+        type: string
+  schedule:
+    - cron: '*/10 * * * *'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install garminconnect curl_cffi fitparse supabase
+
+      - name: Run sync job
+        env:
+          GARMIN_SYNC_USERS: ${{ secrets.GARMIN_SYNC_USERS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          REQUEST_ID: ${{ github.event.inputs.request_id }}
+        run: |
+          echo "TODO: implement scripts/garmin_sync_job.py"
+          echo "  1. Fetch pending garmin_sync_request rows"
+          echo "  2. Login via python-garminconnect"
+          echo "  3. Download FIT + API responses"
+          echo "  4. Parse FIT → fit_parsed JSON"
+          echo "  5. Upsert garmin_activity_archive / garmin_daily_archive"
+          echo "  6. Update request status → complete"
