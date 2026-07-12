@@ -6,3 +6,5 @@ DerivedData/
 .swiftpm/
 garmin_export_samples/
 .venv/
+*.fit
+*.zip

@@ -1,29 +1,39 @@
 # Garmin API 詳細データ同期 — 調査結果
 
-作成日: 2026-07-12  
+作成日: 2026-07-12（更新: 2026-07-12）  
 関連 Issue: [#15](https://github.com/kzkski/MyVitalRelay/issues/15)  
-調査対象: [kzkski/python-garminconnect](https://github.com/kzkski/python-garminconnect)（upstream: [cyberjunky/python-garminconnect](https://github.com/cyberjunky/python-garminconnect)）
+調査対象: [kzkski/python-garminconnect](https://github.com/kzkski/python-garminconnect)
+
+---
+
+## 0. オーナー判断（確定）
+
+| 項目 | 決定 |
+|---|---|
+| MFA | **無効** → 完全自動同期が可能（email/password + DI OAuth refresh） |
+| ユーザー数 | **個人利用**（最大 1〜2 人。汎用マルチテナント化はしない） |
+| 欲しいデータ | **FIT ファイル全量** + **Garmin API から取得できるデータはすべて**（個別フィールド選定はしない） |
+| MyVitalRelay（iOS） | **現状維持**（HealthKit リレーはそのまま） |
 
 ---
 
 ## 1. エグゼクティブサマリー
 
-### 結論: **段階的 GO（Phase 1: サーバー側エンリッチメント PoC）**
+### 結論: **GO — 「生データアーカイブ」方式**
 
-HealthKit 経由の Garmin 同期は **セッション概要（距離・HR・標高・カロリー）** までは実用的だが、**cadence / power / ラップ / トレーニング効果 / 筋トレセット / 日次ウェルネス指標** は HealthKit に載らないか、Garmin Connect アプリの HK 書き込み仕様上 NULL のまま残る。
+HealthKit 同期（`training_log` 等）はケトログ向け概要データの**正**として維持し、Garmin Connect からは **FIT 原データ + API 生 JSON を丸ごと保存**する。
 
-`python-garminconnect` はこれらを Garmin Connect 内部 API から取得可能。ライブラリは 2026 年上半期に認証方式を刷新（DI OAuth Bearer トークン）しており、upstream は活発にメンテされている。フォーク `kzkski/python-garminconnect` は upstream と同期済み（差分 0 コミット）。
+フィールド単位の backfill や正規化テーブル（ラップ行・セット行）への分解は **初期スコープ外**。必要な分析は保存済み FIT / JSON から後段（SQL View / AI / バッチ）で行う。
 
 **推奨方向性:**
 
-| レイヤ | 役割 | 変更 |
-|---|---|---|
-| MyVitalRelay（iOS） | HealthKit → Supabase リレー | **現状維持**（変更最小） |
-| Garmin Sync Job（新規） | python-garminconnect → Supabase エンリッチメント | **新規追加** |
-| `training_log` | ワークアウト正 | HK 由来を正とし、Garmin API で **NULL 列の backfill** + `metadata.garmin_activity_id` |
-| 新規テーブル | 詳細データ | ラップ・筋トレセット・日次ウェルネス |
-
-iOS アプリ内 Garmin 連携（Swift 移植）や Supabase Edge Function（Python 非対応）は **初期段階では非推奨**。
+| レイヤ | 役割 |
+|---|---|
+| MyVitalRelay（iOS） | HealthKit → Supabase（現状維持） |
+| Garmin Sync Job（新規 Python） | Garmin API → Supabase Storage + アーカイブテーブル |
+| `training_log` | HK 正。Garmin とは `garmin_activity_id` / 時刻で**参照リンクのみ**（上書きしない） |
+| Supabase Storage | FIT zip（`ORIGINAL` 形式）+ 必要に応じ大型 JSON |
+| Postgres | アーカイブ索引 + API レスポンス JSONB |
 
 ---
 
@@ -31,56 +41,32 @@ iOS アプリ内 Garmin 連携（Swift 移植）や Supabase Edge Function（Pyt
 
 ```
 Garmin Watch → Garmin Connect App → HealthKit → MyVitalRelay → Supabase
-Life Fitness  → LF Connect App   → HealthKit ↗
 ```
-
-同期対象テーブル:
 
 | HealthKit | Supabase |
 |---|---|
 | HKWorkout | `training_log` |
 | bodyMass / bodyFatPercentage | `body_composition_sample` |
-| sleepAnalysis（asleep 系） | `sleep_segment` |
-| activeEnergy / basalEnergy（日次） | `daily_activity_summary` |
+| sleepAnalysis | `sleep_segment` |
+| activeEnergy / basalEnergy | `daily_activity_summary` |
 
-`training_log` の論理キー: `(user_id, start_time, end_time, workout_type)` — Issue #8, #12 対応済み。
+Garmin API 同期は **HealthKit 経路とは独立した第 2 パイプライン**として追加する。
 
 ---
 
-## 3. データギャップ分析
+## 3. なぜ FIT + 全 API か
 
-### 3.1 ワークアウト（`training_log` 列 vs Garmin API）
+HealthKit 経由では以下が欠落または NULL のまま:
 
-| 列 / 概念 | HealthKit（Garmin 由来） | Garmin API（`get_activity` / typed `Activity`） | ギャップ |
-|---|---|---|---|
-| start/end, duration | ✅ | ✅ `startTimeLocal`, `duration` | 小（タイムゾーン表記差） |
-| distance_km | ✅ | ✅ `distance`（meters） | なし |
-| calories_burned | ✅ | ✅ `calories` | なし |
-| avg_hr / max_hr | ✅ | ✅ `averageHR`, `maxHR` | なし（HK でも取得可） |
-| hr_zone_minutes | ✅（HK 心拍サンプル集計） | ✅ `get_activity_hr_in_timezones` | Garmin 側はデバイスゾーン定義の可能性 |
-| elevation_gain_m | ✅ | ✅ `elevationGain` | なし |
-| **cadence** | ❌ NULL | ✅ `averageRunningCadenceInStepsPerMinute` | **大** |
-| **power_watts** | ❌ NULL | ✅ `avgPower`, `maxPower`, `normPower` | **大** |
-| stroke_count | ✅（水泳） | △ 種目依存 | 要実データ確認 |
-| ラップ / スプリット | ❌ | ✅ `get_activity_splits`, `splitSummaries` | **大** |
-| トレーニング効果 | ❌ | ✅ `aerobicTrainingEffect`, `activityTrainingLoad` | **中** |
-| ランニング力学 | ❌ | ✅ `avgVerticalOscillation`, `avgGroundContactTime`, `avgStrideLength` | **中**（分析用） |
-| 筋トレセット | ❌ | ✅ `get_activity_exercise_sets` | **大** |
-| GPS / FIT 生データ | ❌ | ✅ `get_activity_details`, `download_activity` | **将来**（容量・プライバシー） |
+- 秒単位のセンサー系列（HR / power / cadence / GPS 等）→ **FIT に含まれる**
+- ラップ・筋トレセット・トレーニング効果の詳細 → FIT または activity 詳細 API
+- 日次 HRV / Training Readiness / Body Battery → 日次 API
 
-根拠: `garminconnect/typed.py` の `Activity` モデル、`docs/graphql_queries.txt` のサンプルレスポンス、`WorkoutSnapshot.swift` / `WorkoutMapper.swift` の HK 取得範囲。
+個別列へのマッピングを都度設計するより、**取得可能なものを lossless に保存**する方が:
 
-### 3.2 日次データ
-
-| 概念 | 現行（HK → Supabase） | Garmin API | ギャップ |
-|---|---|---|---|
-| active / basal calories | ✅ `daily_activity_summary` | ✅ `get_stats`（`activeKilocalories`, `bmrKilocalories`） | 重複（ソース差の照合は有用） |
-| 睡眠セグメント | ✅ `sleep_segment` | ✅ `get_sleep_data`（スコア・ステージ秒数・睡眠 HRV） | Garmin スコア・HRV は HK に無い |
-| HRV | ❌ | ✅ `get_hrv_data` | **中** |
-| Training Readiness | ❌ | ✅ `get_training_readiness` | **中** |
-| Body Battery / Stress | ❌ | ✅ `get_body_battery`, `get_stress_data` | **中** |
-| VO2 Max / Fitness Age | ❌ | ✅ `get_max_metrics` | **低〜中** |
-| 歩数 | ❌（未同期） | ✅ `get_stats.totalSteps` | 低 |
+- 将来の分析要件変更に強い
+- 「取りこぼし」が起きない
+- python-garminconnect の API 追加に追従しやすい（JSON にそのまま格納）
 
 ---
 
@@ -88,229 +74,244 @@ Life Fitness  → LF Connect App   → HealthKit ↗
 
 ### 4.1 フォーク状態
 
-- `kzkski/python-garminconnect` ↔ `cyberjunky:master`: **ahead 0 / behind 0**（2026-07-12 時点）
-- 最新コミット: DI OAuth 認証、typed Pydantic モデル、130+ API メソッド
-- 依存: `pip install garminconnect curl_cffi`（TLS impersonation 用）
+- `kzkski/python-garminconnect` ↔ upstream: **差分 0**（2026-07-12）
+- 認証: mobile SSO → DI OAuth Bearer（`~/.garminconnect/garmin_tokens.json`）
+- MFA 無効 → refresh token 自動更新で **無人 cron 運用可**
 
-### 4.2 認証フロー（実装影響大）
+### 4.2 FIT 取得
 
-1. 初回: メール/パスワード + **MFA（有効時）** → `~/.garminconnect/garmin_tokens.json`
-2. 以降: DI OAuth トークン自動 refresh（refresh token 有効限り）
-3. 失効時: 再ログイン（MFA 再入力の可能性）
-
-**自動同期のボトルネック:** MFA 有効アカウントでは、完全无人同期は refresh token 失効まで依存。失効時は人手介入が必要。
-
-### 4.3 主要 API エンドポイント（アクティビティ詳細）
-
-| メソッド | 用途 | Supabase 想定先 |
-|---|---|---|
-| `get_activities_by_date(start, end)` | 日付範囲の一覧取得 | 同期対象の activity ID 列挙 |
-| `get_activity(id)` | サマリー + 基本スプリット | `training_log` backfill |
-| `get_activity_splits(id)` | ラップ詳細 | `garmin_activity_lap` |
-| `get_activity_exercise_sets(id)` | 筋トレセット | `garmin_exercise_set` |
-| `get_activity_hr_in_timezones(id)` | HR ゾーン | `metadata` or 専用列 |
-| `get_activity_power_in_timezones(id)` | パワーゾーン | 同上 |
-| `get_activity_details(id)` | チャート / ポリライン | 将来（blob / 別ストレージ） |
-| `download_activity(id, FIT)` | FIT バイナリ | 将来 |
-
-### 4.4 サンプルレスポンス（upstream ドキュメントより）
-
-`docs/graphql_queries.txt` の running activity 例（抜粋）:
-
-```json
-{
-  "activityId": 16204035614,
-  "averageHR": 139.0,
-  "maxHR": 164.0,
-  "averageRunningCadenceInStepsPerMinute": 165.59,
-  "avgPower": 388.0,
-  "maxPower": 707.0,
-  "normPower": 397.0,
-  "aerobicTrainingEffect": 3.2,
-  "activityTrainingLoad": 158.79,
-  "lapCount": 36,
-  "splitSummaries": [ { "splitType": "INTERVAL_ACTIVE", "distance": 10425.37, ... } ]
-}
+```python
+api.download_activity(activity_id, dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL)
 ```
 
-→ HealthKit 同期だけでは **cadence / power / training effect / laps** が Supabase に入らないことがコード上確認できる。
+- 戻り値: **bytes**（通常は `.zip`。中に `.fit` が入る）
+- TCX / GPX / CSV も取得可能だが、**正は ORIGINAL（FIT ソース）**
+- 403 等: 非公開アクティビティ・権限不足時（テストでも既知）
+
+### 4.3 アクティビティ単位 — 取得対象（読み取り系すべて）
+
+| API | 内容 |
+|---|---|
+| `get_activity` | サマリー（一覧レスポンスと同等） |
+| `get_activity_details` | チャート系列・ポリライン（大型） |
+| `get_activity_splits` | ラップ |
+| `get_activity_typed_splits` | 型付きスプリット |
+| `get_activity_split_summaries` | スプリット集計 |
+| `get_activity_weather` | 天候 |
+| `get_activity_hr_in_timezones` | HR ゾーン滞在 |
+| `get_activity_power_in_timezones` | パワーゾーン滞在 |
+| `get_activity_exercise_sets` | 筋トレセット |
+| `get_activity_gear` | 使用ギア |
+| `download_activity(ORIGINAL)` | **FIT zip** |
+
+書き込み系（upload / delete / set_name 等）は **同期対象外**。
+
+### 4.4 日次 — 取得対象（読み取り系すべて）
+
+`demo.py` カテゴリ 2〜4, 6, 7, 0 等から **get_* 系を網羅**:
+
+| API | 内容 |
+|---|---|
+| `get_stats` / `get_user_summary` | 日次サマリー |
+| `get_sleep_data` | 睡眠（Garmin スコア・HRV 含む） |
+| `get_hrv_data` | HRV |
+| `get_training_readiness` | Training Readiness |
+| `get_training_status` | Training Status |
+| `get_body_battery` / `get_body_battery_events` | Body Battery |
+| `get_stress_data` / `get_all_day_stress` | Stress |
+| `get_heart_rates` / `get_resting_heart_rate` | 心拍 |
+| `get_steps_data` / `get_daily_steps` | 歩数 |
+| `get_respiration_data` / `get_spo2_data` | 呼吸 / SpO2 |
+| `get_max_metrics` | VO2 Max 等 |
+| `get_intensity_minutes_data` | 強度分数 |
+| `get_running_tolerance` | Running Tolerance |
+| `get_body_composition` / `get_stats_and_body` | 体組成 |
+| `get_floors` / `get_hydration_data` 等 | その他利用可能な get_* |
+
+エラー（204 / 404 / 非対応デバイス）は `{"_error": "..."}` として JSON に記録し、同期全体は継続。
 
 ---
 
-## 5. アーキテクチャ案の評価
-
-| 案 | 評価 | 理由 |
-|---|---|---|
-| **A. サーバー側 Python バッチ** | ⭐ **推奨** | ライブラリをそのまま使える。iOS 変更不要。トークンを 1 箇所で管理 |
-| **B. Supabase Edge Function** | ❌ 非推奨 | Python ライブラリ非互換。API 移植コストが PoC を大幅に超える |
-| **C. iOS アプリ内 Garmin 連携** | ❌ 非推奨 | MFA UX、認証情報保管、130+ API の Swift 移植。MyVitalRelay の責務から逸脱 |
-| **D. HK 正 + Garmin 補完** | ⭐ **A と組み合わせ** | 既存 `training_log` 冪等性・論理キーを維持。Garmin はエンリッチメント専用 |
-
-### 推奨構成（Phase 1 PoC）
+## 5. 推奨アーキテクチャ
 
 ```
-┌─────────────────┐     HealthKit      ┌──────────────┐
-│  MyVitalRelay   │ ─────────────────► │  Supabase    │
-│  (iOS, 現状維持) │                    │  training_log│
-└─────────────────┘                    │  sleep_* ... │
-                                       └──────▲───────┘
-                                              │
-┌─────────────────┐  python-garminconnect   │
-│ Garmin Sync Job │ ──────────────────────────┘
-│ (GitHub Actions │   upsert / backfill
-│  or cron VM)    │
-└─────────────────┘
+┌──────────────────┐  HealthKit   ┌─────────────────────────────────┐
+│  MyVitalRelay    │ ───────────► │ Supabase Postgres               │
+│  (iOS, 不変)      │              │  training_log / sleep_* / ...   │
+└──────────────────┘              └─────────────────────────────────┘
+                                              ▲
+                                              │ 索引 + JSONB
+┌──────────────────┐  python-garminconnect   │
+│ Garmin Sync Job  │ ─────────────────────────┤
+│ (GitHub Actions  │                          │
+│  or Mac cron)    │ ────────────────────────►│ Supabase Storage
+└──────────────────┘  FIT zip + 大型 JSON     │  garmin-fit/{user_id}/{id}.zip
+                                              │  garmin-json/...
 ```
 
-**突合キー（案）:**
+### 5.1 なぜサーバー側 Python か
 
-1. **Primary:** `training_log` の `(user_id, start_time, end_time, workout_type)` と Garmin `startTimeLocal` + `duration` + `activityType.typeKey` をマッピング
-2. **Secondary:** 突合成功後 `metadata.garmin_activity_id` を保存し、以降は ID 直結
-3. **許容誤差:** 開始時刻 ±120 秒、duration ±2 分（実データで調整）
+| 案 | 評価 |
+|---|---|
+| **A. サーバー側 Python バッチ** | ⭐ **採用** — ライブラリそのまま、FIT バイナリ処理、1〜2 ユーザー向け Secrets 管理 |
+| B. Supabase Edge Function | ❌ Python 非対応 |
+| C. iOS アプリ内連携 | ❌ 130+ API + FIT + 認証の Swift 移植 |
+| D. フィールド backfill のみ | ❌ オーナー要件（全データ）と不一致 |
+
+### 5.2 認証・ユーザー管理（1〜2 人限定）
+
+```json
+// GitHub Actions Secret: GARMIN_SYNC_USERS（例）
+[
+  {
+    "supabase_user_id": "77ea5bd6-....",
+    "email": "....",
+    "password": "...."
+  }
+]
+```
+
+- トークンは Actions キャッシュ or Secret 更新（`garmin_tokens.json` 相当）
+- **汎用 OAuth UI / ユーザー自助連携は作らない**
+- 2 人目追加時は JSON に 1 エントリ追加のみ
+
+### 5.3 `training_log` との関係
+
+- **上書きしない**（`rpe` / `condition_notes` 等の保護方針を維持）
+- `garmin_activity_archive.training_log_id` で**参照リンク**（時刻突合で後付け可）
+- 突合キー案: `start_time` ±120s + `duration` ±120s + activity type
 
 ---
 
 ## 6. スキーマ案（ドラフト）
 
-### 6.1 既存 `training_log` への backfill（Garmin API 由来のみ更新）
+### 6.1 Supabase Storage バケット
 
-| 列 | ソース |
-|---|---|
-| `cadence` | `averageRunningCadenceInStepsPerMinute`（run/walk） |
-| `power_watts` | `avgPower`（bike/run 等） |
-| `metadata.garmin_activity_id` | `activityId` |
-| `metadata.garmin_*` | training effect, norm power, lap_count 等 |
+| バケット | パス例 | 内容 |
+|---|---|---|
+| `garmin-fit` | `{user_id}/{garmin_activity_id}.zip` | FIT ORIGINAL |
+| `garmin-json` | `{user_id}/activities/{garmin_activity_id}.json` | 全 API レスポンス（大型時） |
+| `garmin-json` | `{user_id}/daily/{date}.json` | 日次全 API レスポンス |
 
-**注意:** backfill は `data_source='garmin'` 行に限定。PostgREST upsert 時に `rpe` / `condition_notes` 等の追記列を上書きしない（現行 SyncEngine と同じ部分更新方針）。
+バケットは private + RLS（`auth.uid()` = パス先頭 UUID）。
 
-### 6.2 新規テーブル（案）
+### 6.2 Postgres
 
 ```sql
--- ラップ / スプリット（1 activity × N laps）
-CREATE TABLE garmin_activity_lap (
+-- アクティビティアーカイブ（1 Garmin activity = 1 行）
+CREATE TABLE garmin_activity_archive (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES auth.users(id),
   garmin_activity_id bigint NOT NULL,
-  lap_index integer NOT NULL,
-  start_time timestamptz,
+  activity_type_key text,
+  activity_name text,
+  start_time_local timestamptz,
   duration_sec numeric,
-  distance_m numeric,
-  avg_hr numeric,
-  max_hr numeric,
-  avg_speed_mps numeric,
-  elevation_gain_m numeric,
-  split_type text,
-  metadata jsonb DEFAULT '{}'::jsonb,
+  fit_storage_path text NOT NULL,           -- Storage 内 zip パス
+  api_json_storage_path text,               -- 大型 JSON の Storage パス（任意）
+  api_responses jsonb DEFAULT '{}'::jsonb,  -- 小型レスポンスはインライン
+  training_log_id uuid REFERENCES training_log(id),  -- 参照リンク（任意）
+  sync_status text NOT NULL DEFAULT 'complete'
+    CHECK (sync_status IN ('complete','partial','failed')),
+  sync_errors jsonb DEFAULT '[]'::jsonb,
   synced_at timestamptz DEFAULT now(),
-  UNIQUE (user_id, garmin_activity_id, lap_index)
+  UNIQUE (user_id, garmin_activity_id)
 );
 
--- 筋トレセット
-CREATE TABLE garmin_exercise_set (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid NOT NULL REFERENCES auth.users(id),
-  garmin_activity_id bigint NOT NULL,
-  exercise_index integer NOT NULL,
-  set_index integer NOT NULL,
-  category text,
-  exercise_name text,
-  reps integer,
-  weight_kg numeric,
-  duration_sec numeric,
-  metadata jsonb DEFAULT '{}'::jsonb,
-  synced_at timestamptz DEFAULT now(),
-  UNIQUE (user_id, garmin_activity_id, exercise_index, set_index)
-);
-
--- 日次ウェルネス（Garmin 固有指標）
-CREATE TABLE garmin_daily_wellness (
+-- 日次アーカイブ（1 日 = 1 行）
+CREATE TABLE garmin_daily_archive (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES auth.users(id),
   date date NOT NULL,
-  training_readiness_score integer,
-  training_readiness_level text,
-  hrv_weekly_avg numeric,
-  hrv_status text,
-  body_battery_high integer,
-  body_battery_low integer,
-  avg_stress_level integer,
-  vo2_max numeric,
-  metadata jsonb DEFAULT '{}'::jsonb,
+  api_json_storage_path text,
+  api_responses jsonb DEFAULT '{}'::jsonb,
+  sync_status text NOT NULL DEFAULT 'complete'
+    CHECK (sync_status IN ('complete','partial','failed')),
+  sync_errors jsonb DEFAULT '[]'::jsonb,
   synced_at timestamptz DEFAULT now(),
   UNIQUE (user_id, date)
 );
+
+CREATE INDEX idx_garmin_activity_archive_user_start
+  ON garmin_activity_archive (user_id, start_time_local);
+CREATE INDEX idx_garmin_daily_archive_user_date
+  ON garmin_daily_archive (user_id, date);
+
+ALTER TABLE garmin_activity_archive ENABLE ROW LEVEL SECURITY;
+ALTER TABLE garmin_daily_archive ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY garmin_activity_archive_owner ON garmin_activity_archive
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY garmin_daily_archive_owner ON garmin_daily_archive
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 ```
 
-RLS: 既存テーブルと同様 `auth.uid() = user_id`。
+**初期スコープ外:** ラップ正規化テーブル、FIT パース済み時系列テーブル（必要になったら v2）。
 
 ---
 
-## 7. リスクと mitigations
+## 7. 同期ジョブ仕様（案）
+
+### 7.1 アクティビティ同期
+
+1. `get_activities_by_date(since, today)` で ID 列挙
+2. `garmin_activity_archive` に未同期 ID をフィルタ
+3. 各 ID について §4.3 の API をすべて呼ぶ
+4. FIT ORIGINAL をダウンロード → Storage upload
+5. API レスポンスを JSON 化 → 閾値（例: 1MB）超えたら Storage、以下は JSONB
+6. 行 upsert（`user_id, garmin_activity_id`）
+
+### 7.2 日次同期
+
+1. 直近 N 日（初回は 90 日、以降 7 日ローリング等）
+2. §4.4 の get_* をすべて呼ぶ
+3. `garmin_daily_archive` に upsert
+
+### 7.3 実行基盤
+
+- **推奨:** GitHub Actions `schedule`（1日 1〜2 回）+ `workflow_dispatch`
+- 代替: 自宅 Mac cron
+- Secrets: `GARMIN_SYNC_USERS`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`（Storage upload 用）
+
+---
+
+## 8. フェーズ計画
+
+| Phase | 内容 | 成果 |
+|---|---|---|
+| **0** | `garmin_export_samples.py` ローカル実行 | login 確認、FIT zip 取得確認、JSON サンプル |
+| **1** | DDL + Storage バケット + Sync Job MVP | 直近 7 日分のアクティビティ FIT + JSON |
+| **2** | 日次アーカイブ + 初回バックフィル（90 日） | 過去データの FIT 全取得 |
+| **3** | `training_log` 参照リンク + ケトログ AI 用 View | `garmin_activity_archive` JOIN |
+
+---
+
+## 9. リスク
 
 | リスク | 深刻度 | 対応 |
 |---|---|---|
-| **非公式 API** — Garmin 内部 API 変更 | 中 | upstream 追従（フォーク sync）。同期失敗時は HK データのみで継続 |
-| **ToS** — 個人利用のスクレイピング相当 | 中 | 自己データのみ・単一ユーザー。公式 Developer Program は enterprise 向け。利用は自己責任で文書化 |
-| **MFA / トークン失効** | 高 | refresh token 監視 + 失効時通知。初回/MFA は手動 `example.py` |
-| **HealthKit との二重管理** | 中 | HK を正、Garmin は NULL 補完 + 詳細テーブルのみ。数値衝突時は HK 優先 |
-| **同期遅延** | 低 | HK: イベント駆動。Garmin Job: 1日1〜4回 cron で十分 |
-| **2026 年 auth 障害** | 低（回復済） | python-garminconnect は mobile SSO + DI OAuth に移行済み。PoC で login 確認必須 |
+| 非公式 API 変更 | 中 | upstream 追従。失敗時も HK パイプラインは独立 |
+| ToS | 中 | 自己データ・1〜2 人限定。README に disclaimer |
+| Storage 容量 | 中 | FIT ~100KB〜数 MB/activity。個人利用なら問題小 |
+| `get_activity_details` 大型 JSON | 低 | Storage 退避 |
+| FIT download 403 | 低 | `sync_status='partial'` + エラー記録 |
+
+MFA 無効 → **トークン失効リスクは低〜中**（refresh 自動更新）。
 
 ---
 
-## 8. フェーズ提案
+## 10. 残確認（Phase 0）
 
-### Phase 0: 実データ取得（**要 Kazuki さん作業**）
-
-`scripts/garmin_export_samples.py` をローカル実行し、サンプル JSON を取得（リポジトリにはコミットしない）。
-
-### Phase 1: PoC（推奨スコープ）
-
-- GitHub Actions scheduled workflow（1日1回）または手動 dispatch
-- 直近 7 日の Garmin アクティビティ取得
-- `training_log`（`data_source='garmin'`）と突合 → `cadence` / `power_watts` / `metadata.garmin_activity_id` backfill
-- 成功/失敗を Slack or GitHub Actions summary で通知
-
-### Phase 2: 詳細テーブル
-
-- `garmin_activity_lap` / `garmin_exercise_set` 同期
-- ケトログ AI 向け SQL View
-
-### Phase 3: 日次ウェルネス
-
-- `garmin_daily_wellness` 同期
-- `daily_activity_summary` / `sleep_segment` とのソース比較 View
+- [ ] ローカル `login()` 成功
+- [ ] FIT ORIGINAL zip が取得できる activity タイプ（run / bike / strength）
+- [ ] zip 内 `.fit` の存在確認
+- [ ] `training_log` との時刻突合成功率
+- [ ] **認証情報の置き場所** — GitHub Actions Secrets でよいか（未回答）
 
 ---
 
-## 9. 未確認事項（実データ待ち）
-
-以下は **Kazuki さんの Garmin アカウントで `garmin_export_samples.py` を実行** しないと確定できない:
-
-- [ ] 実際の HK 同期済み `training_log` 行と Garmin API レスポンスの **突合成功率**
-- [ ] 開始時刻のタイムゾーン差（`startTimeLocal` vs `start_time` UTC/JST）
-- [ ] 筋トレアクティビティの `get_activity_exercise_sets` レスポンス形状
-- [ ] ランニング vs サイクリング vs 筋トレで取得可能フィールドの差
-- [ ] MFA 有無と refresh token の実際の寿命
-- [ ] `login()` が現環境で成功するか（最新 auth 方式）
-
----
-
-## 10. 判断に必要な質問（Issue #15 コメント用）
-
-実装方向性を確定するため、以下への回答をお願いしたい:
-
-1. **Garmin MFA** は有効か？（有効なら自動同期の運用フロー設計が変わる）
-2. **最優先で欲しいデータ** はどれか？（例: cadence/power / ラップ / 筋トレセット / Training Readiness）
-3. **認証情報の置き場所** — GitHub Actions Secrets / 自宅 Mac cron / 別 VPS のどれが許容できるか
-4. **ユーザー数** — 当面 Kazuki さん単独か、将来マルチユーザー想定か
-5. **`garmin_export_samples.py` の実行** — 調査 Phase 0 として可能か（出力 JSON は Issue に貼るか DM、リポジトリには載せない）
-
----
-
-## 11. 参考リンク
+## 11. 参考
 
 - フォーク: https://github.com/kzkski/python-garminconnect
-- Upstream README（認証・API 一覧）: https://github.com/cyberjunky/python-garminconnect
-- Garmin Connect Developer Program（公式・enterprise）: https://developer.garmin.com/gc-developer-program/
+- Export スクリプト: `scripts/garmin_export_samples.py`
 - MyVitalRelay 実装計画: `docs/implementation-plan.md`
