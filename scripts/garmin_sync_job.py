@@ -2,12 +2,6 @@
 """Garmin Sync Job — garmin_sync_request キューを処理する。
 
 Phase 1: scope=activities のみ。docs/garmin-sync-ops.md 参照。
-
-環境変数:
-  SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-  GARMIN_SYNC_USERS — JSON [{supabase_user_id, email, password}]
-  REQUEST_ID — 省略時は pending 全件（古い順）
-  JSON_INLINE_MAX_BYTES — デフォルト 524288 (512KB)
 """
 
 from __future__ import annotations
@@ -18,7 +12,10 @@ import sys
 import zipfile
 from datetime import UTC, datetime
 from io import BytesIO
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
     from garminconnect import Garmin
@@ -27,8 +24,17 @@ except ImportError:
     print("pip install garminconnect curl_cffi fitparse supabase", file=sys.stderr)
     sys.exit(1)
 
-JSON_INLINE_MAX = int(os.environ.get("JSON_INLINE_MAX_BYTES", "524288"))
+from garmin_sync_lib import (
+    JSON_INLINE_MAX_DEFAULT,
+    fit_to_json,
+    inline_or_storage_plan,
+    json_safe,
+    parse_garmin_start_time,
+)
+
+JSON_INLINE_MAX = int(os.environ.get("JSON_INLINE_MAX_BYTES", str(JSON_INLINE_MAX_DEFAULT)))
 STALE_MINUTES = 30
+PENDING_MAX_HOURS = 24
 
 ACTIVITY_FETCHERS = [
     "get_activity",
@@ -51,38 +57,11 @@ def _env(name: str) -> str:
     return v
 
 
-def _json_safe(obj: Any) -> Any:
-    if isinstance(obj, bytes):
-        return {"_type": "bytes", "length": len(obj)}
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    if isinstance(obj, dict):
-        return {k: _json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_json_safe(v) for v in obj]
-    return obj
-
-
 def _try_call(fn: Any, *args: Any) -> Any:
     try:
-        return _json_safe(fn(*args))
+        return json_safe(fn(*args))
     except Exception as exc:  # noqa: BLE001
         return {"_error": type(exc).__name__, "message": str(exc)}
-
-
-def _fit_to_json(fit_bytes: bytes) -> dict[str, Any]:
-    try:
-        import fitparse
-    except ImportError:
-        return {"_error": "fitparse not installed"}
-
-    messages = []
-    for msg in fitparse.FitFile(BytesIO(fit_bytes)).get_messages():
-        messages.append({
-            "name": msg.name,
-            "fields": {f.name: _json_safe(f.value) for f in msg.fields},
-        })
-    return {"messages": messages, "message_count": len(messages)}
 
 
 def load_users() -> list[dict[str, str]]:
@@ -112,8 +91,9 @@ def login_garmin(sb: Any, user_id: str, email: str, password: str) -> Garmin:
     return api
 
 
-def reset_stale(sb: Any) -> None:
+def prepare_queue(sb: Any) -> None:
     sb.rpc("reset_stale_garmin_sync_requests", {"stale_minutes": STALE_MINUTES}).execute()
+    sb.rpc("expire_old_pending_garmin_sync_requests", {"max_age_hours": PENDING_MAX_HOURS}).execute()
 
 
 def claim_request(sb: Any, request_id: str | None) -> dict[str, Any] | None:
@@ -158,9 +138,11 @@ def already_synced(sb: Any, user_id: str, activity_id: int) -> bool:
     return bool(row.data and row.data.get("sync_status") == "complete")
 
 
-def upload_json(sb: Any, bucket: str, path: str, payload: dict[str, Any]) -> str:
+def upload_json(sb: Any, path: str, payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    sb.storage.from_(bucket).upload(path, data, {"content-type": "application/json", "upsert": "true"})
+    sb.storage.from_("garmin-json").upload(
+        path, data, {"content-type": "application/json", "upsert": "true"}
+    )
     return path
 
 
@@ -172,15 +154,16 @@ def upload_fit_zip(sb: Any, user_id: str, activity_id: int, raw: bytes) -> str:
     return path
 
 
-def maybe_inline_or_storage(
+def store_json_payload(
     sb: Any, user_id: str, kind: str, activity_id: int, payload: dict[str, Any]
 ) -> tuple[dict[str, Any], str | None]:
-    encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    if len(encoded) <= JSON_INLINE_MAX:
-        return payload, None
+    inline, use_storage = inline_or_storage_plan(payload, JSON_INLINE_MAX)
+    if not use_storage:
+        return inline, None
     path = f"{user_id}/activities/{activity_id}_{kind}.json"
-    upload_json(sb, "garmin-json", path, payload)
-    return {"_storage_path": path, "_bytes": len(encoded)}, path
+    upload_json(sb, path, payload)
+    inline["_storage_path"] = path
+    return inline, path
 
 
 def sync_activity(
@@ -207,7 +190,7 @@ def sync_activity(
         with zipfile.ZipFile(BytesIO(raw_zip)) as zf:
             for name in zf.namelist():
                 if name.lower().endswith(".fit"):
-                    fit_parsed = _fit_to_json(zf.read(name))
+                    fit_parsed = fit_to_json(zf.read(name))
                     break
     except Exception as exc:  # noqa: BLE001
         errors.append({"step": "fit_download", "error": str(exc)})
@@ -216,8 +199,8 @@ def sync_activity(
     if isinstance(summary, dict) and "_error" in summary:
         summary = act
 
-    inline_api, api_path = maybe_inline_or_storage(sb, user_id, "api", int(aid), api_responses)
-    inline_fit, fit_path = maybe_inline_or_storage(sb, user_id, "fit_parsed", int(aid), fit_parsed)
+    inline_api, api_path = store_json_payload(sb, user_id, "api", int(aid), api_responses)
+    inline_fit, fit_path = store_json_payload(sb, user_id, "fit_parsed", int(aid), fit_parsed)
 
     sync_status = "complete" if not errors else "partial"
     sb.table("garmin_activity_archive").upsert({
@@ -225,7 +208,7 @@ def sync_activity(
         "garmin_activity_id": int(aid),
         "activity_type_key": (act.get("activityType") or {}).get("typeKey"),
         "activity_name": act.get("activityName"),
-        "start_time_local": act.get("startTimeLocal"),
+        "start_time_local": parse_garmin_start_time(act),
         "duration_sec": act.get("duration"),
         "summary": summary if isinstance(summary, dict) else {},
         "fit_parsed": inline_fit,
@@ -265,7 +248,7 @@ def main() -> None:
     users = {u["supabase_user_id"]: u for u in load_users()}
     request_id = os.environ.get("REQUEST_ID", "").strip() or None
 
-    reset_stale(sb)
+    prepare_queue(sb)
 
     while True:
         req = claim_request(sb, request_id)

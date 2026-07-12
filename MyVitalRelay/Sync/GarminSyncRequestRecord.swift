@@ -21,32 +21,41 @@ struct GarminSyncRequestRecord: Codable {
     static func healthKitActivities(dateFrom: String, dateTo: String) -> Self {
         Self(scope: "activities", dateFrom: dateFrom, dateTo: dateTo, triggerSource: "healthkit")
     }
+
+    /// 同期した Garmin レコード群からキュー用の日付範囲を決定する。
+    static func activitiesDateRange(from records: [TrainingLogRecord]) -> Self? {
+        guard let range = enqueueDateRange(from: records.map(\.date)) else { return nil }
+        return healthKitActivities(dateFrom: range.lowerBound, dateTo: range.upperBound)
+    }
+
+    private static func enqueueDateRange(from dates: [String]) -> ClosedRange<String>? {
+        let sorted = dates.sorted()
+        guard let first = sorted.first, let last = sorted.last else { return nil }
+        return first...last
+    }
 }
 
 enum GarminSyncRequestEnqueuer {
-    /// Garmin 由来 training_log の upsert 成功後に FIT 取得キューを投入する。
     static func enqueueActivitiesIfNeeded(
         client: SupabaseClient,
         garminRecords: [TrainingLogRecord]
     ) async {
-        guard !garminRecords.isEmpty else { return }
-
-        let dates = garminRecords.map(\.date).sorted()
-        guard let dateFrom = dates.first, let dateTo = dates.last else { return }
-
-        let request = GarminSyncRequestRecord.healthKitActivities(
-            dateFrom: dateFrom,
-            dateTo: dateTo
-        )
+        guard let request = GarminSyncRequestRecord.activitiesDateRange(from: garminRecords) else {
+            return
+        }
 
         do {
             try await client.from("garmin_sync_request")
                 .insert(request)
                 .execute()
-            garminSyncLogger.info("Enqueued garmin_sync_request activities \(dateFrom)...\(dateTo)")
+            garminSyncLogger.info(
+                "Enqueued garmin_sync_request activities \(request.dateFrom)...\(request.dateTo)"
+            )
         } catch {
             if Self.isPendingDuplicateError(error) {
-                garminSyncLogger.debug("Garmin sync request already pending for \(dateFrom)...\(dateTo)")
+                garminSyncLogger.debug(
+                    "Garmin sync request already pending for \(request.dateFrom)...\(request.dateTo)"
+                )
                 return
             }
             garminSyncLogger.error("Failed to enqueue garmin_sync_request: \(error.localizedDescription)")
@@ -54,8 +63,10 @@ enum GarminSyncRequestEnqueuer {
     }
 
     /// 部分 UNIQUE（pending dedup）による重複 INSERT。
-    private static func isPendingDuplicateError(_ error: Error) -> Bool {
-        let message = String(describing: error).lowercased()
+    static func isPendingDuplicateError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == "PostgrestError", nsError.code == 23505 { return true }
+        let message = error.localizedDescription.lowercased()
         return message.contains("23505")
             || message.contains("duplicate")
             || message.contains("unique constraint")

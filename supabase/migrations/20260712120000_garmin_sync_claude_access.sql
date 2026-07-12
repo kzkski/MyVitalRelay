@@ -1,9 +1,9 @@
 -- Garmin 同期: Claude トリガー + JSON アーカイブ（Issue #15）
 -- 設計: docs/claude-garmin-access.md, docs/garmin-sync-ops.md
--- ※本番適用前に get_advisors で RLS / Storage 確認
+-- ※本番適用: .github/workflows/prod-db-migrate.yml または supabase db push
 
 -- ---------------------------------------------------------------------------
--- 0. Storage バケット（FIT 原データ + 大型 JSON）
+-- 0. Storage バケット
 -- ---------------------------------------------------------------------------
 
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -12,7 +12,7 @@ VALUES
   ('garmin-json', 'garmin-json', false, 52428800, ARRAY['application/json'])
 ON CONFLICT (id) DO NOTHING;
 
--- 本人のみ読取（パス先頭 = user_id）
+DROP POLICY IF EXISTS garmin_fit_owner_read ON storage.objects;
 CREATE POLICY garmin_fit_owner_read ON storage.objects
   FOR SELECT TO authenticated
   USING (
@@ -20,6 +20,7 @@ CREATE POLICY garmin_fit_owner_read ON storage.objects
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
 
+DROP POLICY IF EXISTS garmin_json_owner_read ON storage.objects;
 CREATE POLICY garmin_json_owner_read ON storage.objects
   FOR SELECT TO authenticated
   USING (
@@ -27,26 +28,23 @@ CREATE POLICY garmin_json_owner_read ON storage.objects
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
 
--- 書込は service_role（Sync Job）のみ — authenticated からの INSERT/UPDATE ポリシーは作らない
-
 -- ---------------------------------------------------------------------------
--- 1. Garmin OAuth トークン（GHA 実行間で DI token を永続化）
+-- 1. Garmin OAuth トークン
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE garmin_oauth_tokens (
+CREATE TABLE IF NOT EXISTS garmin_oauth_tokens (
   user_id uuid PRIMARY KEY REFERENCES auth.users(id),
   token_store jsonb NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE garmin_oauth_tokens ENABLE ROW LEVEL SECURITY;
--- ポリシーなし: authenticated から不可。Sync Job（service_role）のみ。
 
 -- ---------------------------------------------------------------------------
 -- 2. 同期リクエスト
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE garmin_sync_request (
+CREATE TABLE IF NOT EXISTS garmin_sync_request (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id),
   scope text NOT NULL CHECK (scope IN ('activities', 'daily', 'all')),
@@ -64,32 +62,32 @@ CREATE TABLE garmin_sync_request (
   CHECK (date_from <= date_to)
 );
 
-CREATE UNIQUE INDEX idx_garmin_sync_request_pending_dedup
+CREATE UNIQUE INDEX IF NOT EXISTS idx_garmin_sync_request_pending_dedup
   ON garmin_sync_request (user_id, scope, date_from, date_to)
   WHERE status = 'pending';
 
-CREATE INDEX idx_garmin_sync_request_pending
+CREATE INDEX IF NOT EXISTS idx_garmin_sync_request_pending
   ON garmin_sync_request (requested_at)
   WHERE status = 'pending';
 
-CREATE INDEX idx_garmin_sync_request_user_status
+CREATE INDEX IF NOT EXISTS idx_garmin_sync_request_user_status
   ON garmin_sync_request (user_id, status, requested_at);
 
 ALTER TABLE garmin_sync_request ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS garmin_sync_request_owner_select ON garmin_sync_request;
 CREATE POLICY garmin_sync_request_owner_select ON garmin_sync_request
   FOR SELECT USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS garmin_sync_request_owner_insert ON garmin_sync_request;
 CREATE POLICY garmin_sync_request_owner_insert ON garmin_sync_request
   FOR INSERT WITH CHECK (auth.uid() = user_id);
-
--- UPDATE は service_role（Sync Job）のみ
 
 -- ---------------------------------------------------------------------------
 -- 3. アクティビティアーカイブ
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE garmin_activity_archive (
+CREATE TABLE IF NOT EXISTS garmin_activity_archive (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES auth.users(id),
   garmin_activity_id bigint NOT NULL,
@@ -112,23 +110,24 @@ CREATE TABLE garmin_activity_archive (
   UNIQUE (user_id, garmin_activity_id)
 );
 
-CREATE INDEX idx_garmin_activity_archive_user_start
+CREATE INDEX IF NOT EXISTS idx_garmin_activity_archive_user_start
   ON garmin_activity_archive (user_id, start_time_local);
 
-CREATE INDEX idx_garmin_activity_archive_unlinked
+CREATE INDEX IF NOT EXISTS idx_garmin_activity_archive_unlinked
   ON garmin_activity_archive (user_id, start_time_local)
   WHERE training_log_id IS NULL;
 
 ALTER TABLE garmin_activity_archive ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS garmin_activity_archive_owner ON garmin_activity_archive;
 CREATE POLICY garmin_activity_archive_owner ON garmin_activity_archive
   FOR SELECT USING (auth.uid() = user_id);
 
 -- ---------------------------------------------------------------------------
--- 4. 日次アーカイブ（Phase 1.5 で job 実装。DDL のみ先行）
+-- 4. 日次アーカイブ（Phase 1.5 で job 実装）
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE garmin_daily_archive (
+CREATE TABLE IF NOT EXISTS garmin_daily_archive (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES auth.users(id),
   date date NOT NULL,
@@ -144,6 +143,7 @@ CREATE TABLE garmin_daily_archive (
 
 ALTER TABLE garmin_daily_archive ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS garmin_daily_archive_owner ON garmin_daily_archive;
 CREATE POLICY garmin_daily_archive_owner ON garmin_daily_archive
   FOR SELECT USING (auth.uid() = user_id);
 
@@ -151,7 +151,6 @@ CREATE POLICY garmin_daily_archive_owner ON garmin_daily_archive
 -- 5. ジョブ用ヘルパー
 -- ---------------------------------------------------------------------------
 
--- 30 分以上 running のままのリクエストを pending に戻す（クラッシュ復旧）
 CREATE OR REPLACE FUNCTION reset_stale_garmin_sync_requests(stale_minutes integer DEFAULT 30)
 RETURNS integer
 LANGUAGE plpgsql
@@ -173,7 +172,27 @@ BEGIN
 END;
 $$;
 
--- garmin_activity_archive ↔ training_log 参照リンク（±120 秒許容）
+CREATE OR REPLACE FUNCTION expire_old_pending_garmin_sync_requests(max_age_hours integer DEFAULT 24)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  affected integer;
+BEGIN
+  UPDATE garmin_sync_request
+  SET status = 'failed',
+      completed_at = now(),
+      error_message = COALESCE(error_message, '') || ' [pending expired]'
+  WHERE status = 'pending'
+    AND requested_at < now() - (max_age_hours || ' hours')::interval;
+
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  RETURN affected;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION link_garmin_activity_training_log(p_user_id uuid)
 RETURNS integer
 LANGUAGE plpgsql
@@ -206,15 +225,20 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION reset_stale_garmin_sync_requests(integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION expire_old_pending_garmin_sync_requests(integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION link_garmin_activity_training_log(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION reset_stale_garmin_sync_requests(integer) TO service_role;
+GRANT EXECUTE ON FUNCTION expire_old_pending_garmin_sync_requests(integer) TO service_role;
 GRANT EXECUTE ON FUNCTION link_garmin_activity_training_log(uuid) TO service_role;
 
 -- ---------------------------------------------------------------------------
 -- 6. Claude 向け View
 -- ---------------------------------------------------------------------------
 
--- 軽量: 一覧・会話開始時はこちら
+DROP VIEW IF EXISTS garmin_activity_claude;
+DROP VIEW IF EXISTS garmin_activity_claude_summary;
+DROP VIEW IF EXISTS garmin_daily_claude;
+
 CREATE VIEW garmin_activity_claude_summary
 WITH (security_invoker = true)
 AS
@@ -246,7 +270,6 @@ SELECT
 FROM garmin_activity_archive a
 LEFT JOIN training_log t ON t.id = a.training_log_id;
 
--- 詳細: 単一 activity の深掘り時（garmin_activity_id で絞る）
 CREATE VIEW garmin_activity_claude
 WITH (security_invoker = true)
 AS

@@ -54,4 +54,4 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           REQUEST_ID: ${{ steps.params.outputs.request_id }}
-        run: python scripts/garmin_sync_job.py
+        run: PYTHONPATH=scripts python scripts/garmin_sync_job.py
