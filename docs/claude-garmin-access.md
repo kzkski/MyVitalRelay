@@ -38,34 +38,43 @@ Garmin 詳細も **同じ経路** で読めるようにする（新テーブル 
 ## 3. 全体フロー
 
 ```
-┌─────────────┐
-│   Claude    │
-│ (会話中)     │
-└──────┬──────┘
-       │ ① INSERT garmin_sync_request (pending)
-       │ ② GET garmin_sync_request?status=eq.complete (ポーリング)
-       │ ③ GET garmin_activity_claude / garmin_daily_claude
-       ▼
-┌─────────────────────────────────────┐
-│ Supabase Postgres (RLS)             │
-│  garmin_sync_request  ← トリガーキュー │
-│  garmin_activity_archive            │
-│  garmin_daily_archive               │
-│  garmin_activity_claude (VIEW)      │
-└──────────────▲──────────────────────┘
-               │ service_role で書込
-┌──────────────┴──────────────────────┐
-│ Garmin Sync Job (Python)            │
-│  GitHub Actions workflow_dispatch   │
-│  + 10分 cron（pending キュー処理）    │
-└──────────────▲──────────────────────┘
-               │ python-garminconnect
-┌──────────────┴──────────────────────┐
-│ Garmin Connect API + FIT download   │
-└─────────────────────────────────────┘
+Garmin Watch → Garmin Connect → HealthKit
+                                    │
+                                    ▼
+                          MyVitalRelay（ワークアウト検知）
+                                    │
+                    ┌───────────────┴───────────────┐
+                    ▼                               ▼
+            training_log upsert          garmin_sync_request INSERT
+            (概要データ)                    (trigger_source=healthkit)
+                                                    │
+Claude（会話中）──INSERT garmin_sync_request────────┤
+(trigger_source=claude)                             │
+                    │                               ▼
+                    │                    Garmin Sync Job (Python)
+                    │                    GHA: webhook即時 / cron 10分
+                    │                               │
+                    └────────SELECT─────────────────┤
+                              garmin_activity_claude (VIEW)
 ```
 
-**ポイント:** Claude は Supabase だけ触る。Garmin 認証情報はジョブ側 Secrets に閉じる。
+### トリガー源（2 系統）
+
+| トリガー | 発火元 | タイミング |
+|---|---|---|
+| **healthkit** | MyVitalRelay `SyncEngine` | Garmin ワークアウト upsert 直後 |
+| **claude** | Claude 会話 | 分析前に不足データを補完 |
+
+**ポイント:** iOS は Garmin 認証を持たない。`garmin_sync_request` への INSERT のみ。
+
+### 即時実行（HealthKit 検知時）
+
+INSERT 後 **数分待たず** FIT 取得を走らせるには、Supabase Database Webhook を設定:
+
+1. `garmin_sync_request` INSERT（`trigger_source=healthkit`）を監視
+2. GitHub `repository_dispatch` type `garmin-sync` を POST
+
+→ Phase 1 実装時に Webhook 設定手順を README に記載。cron 10 分はフォールバック。
 
 ---
 
@@ -82,6 +91,8 @@ CREATE TABLE garmin_sync_request (
   scope text NOT NULL CHECK (scope IN ('activities', 'daily', 'all')),
   date_from date NOT NULL,
   date_to date NOT NULL,
+  trigger_source text NOT NULL DEFAULT 'claude'
+    CHECK (trigger_source IN ('healthkit', 'claude', 'manual')),
   status text NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'running', 'complete', 'partial', 'failed')),
   progress jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -91,6 +102,12 @@ CREATE TABLE garmin_sync_request (
   completed_at timestamptz
 );
 ```
+
+| trigger_source | 発火元 |
+|---|---|
+| `healthkit` | MyVitalRelay — Garmin ワークアウト upsert 後に自動 INSERT |
+| `claude` | Claude 会話 — 分析前の手動依頼 |
+| `manual` | デバッグ / workflow_dispatch |
 
 ### 4.2 Claude の操作例
 

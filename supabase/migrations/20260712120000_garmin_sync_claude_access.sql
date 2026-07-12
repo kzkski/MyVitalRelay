@@ -12,6 +12,8 @@ CREATE TABLE garmin_sync_request (
   scope text NOT NULL CHECK (scope IN ('activities', 'daily', 'all')),
   date_from date NOT NULL,
   date_to date NOT NULL,
+  trigger_source text NOT NULL DEFAULT 'claude'
+    CHECK (trigger_source IN ('healthkit', 'claude', 'manual')),
   status text NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'running', 'complete', 'partial', 'failed')),
   progress jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -21,6 +23,11 @@ CREATE TABLE garmin_sync_request (
   completed_at timestamptz,
   CHECK (date_from <= date_to)
 );
+
+-- 同一ユーザー・期間・scope の pending が重複しない（HealthKit 連続同期対策）
+CREATE UNIQUE INDEX idx_garmin_sync_request_pending_dedup
+  ON garmin_sync_request (user_id, scope, date_from, date_to)
+  WHERE status = 'pending';
 
 CREATE INDEX idx_garmin_sync_request_pending
   ON garmin_sync_request (requested_at)

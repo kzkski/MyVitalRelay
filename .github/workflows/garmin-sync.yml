@@ -18,6 +18,8 @@ on:
         description: garmin_sync_request.id（省略時は pending 全件）
         required: false
         type: string
+  repository_dispatch:
+    types: [garmin-sync]
   schedule:
     - cron: '*/10 * * * *'
 
