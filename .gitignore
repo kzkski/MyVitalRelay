@@ -4,3 +4,5 @@ DerivedData/
 *.xcodeproj
 .build/
 .swiftpm/
+garmin_export_samples/
+.venv/
