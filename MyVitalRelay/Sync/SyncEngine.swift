@@ -106,6 +106,12 @@ final class SyncEngine {
             try await client.from("training_log")
                 .upsert(records, onConflict: "user_id,start_time,end_time,workout_type")
                 .execute()
+
+            let garminRecords = records.filter { $0.dataSource == "garmin" }
+            await GarminSyncRequestEnqueuer.enqueueActivitiesIfNeeded(
+                client: client,
+                garminRecords: garminRecords
+            )
         }
 
         // 削除通知の処理は必ず論理キーupsertの後に行う（Issue #12）。

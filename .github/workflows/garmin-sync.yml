@@ -1,0 +1,57 @@
+# Garmin Sync Job
+#
+# Secrets: GARMIN_SYNC_USERS, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+# Ops: docs/garmin-sync-ops.md
+
+name: Garmin Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: garmin_sync_request.id（省略時は pending 全件）
+        required: false
+        type: string
+  repository_dispatch:
+    types: [garmin-sync]
+  schedule:
+    - cron: '*/10 * * * *'
+
+concurrency:
+  group: garmin-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install garminconnect curl_cffi fitparse supabase
+
+      - name: Resolve request id
+        id: params
+        run: |
+          DISPATCH_ID="${{ github.event.client_payload.request_id }}"
+          INPUT_ID="${{ github.event.inputs.request_id }}"
+          if [ -n "$DISPATCH_ID" ]; then
+            echo "request_id=$DISPATCH_ID" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_ID" ]; then
+            echo "request_id=$INPUT_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "request_id=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run sync job
+        env:
+          GARMIN_SYNC_USERS: ${{ secrets.GARMIN_SYNC_USERS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          REQUEST_ID: ${{ steps.params.outputs.request_id }}
+        run: PYTHONPATH=scripts python scripts/garmin_sync_job.py
