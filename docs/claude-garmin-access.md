@@ -1,117 +1,149 @@
-# Claude 向け Garmin データアクセス設計
+# Claude 向け Garmin データアクセスガイド
 
-作成日: 2026-07-12  
-前提: ケトログ Claude 連携（`refresh_token` → PostgREST + RLS）  
-関連: `docs/garmin-api-sync-investigation.md`
+MyVitalRelay が管理する Garmin 詳細データの読み方・同期依頼の出し方。
+
+**このドキュメントを読んでから DB にアクセスすること。**
+
+関連: `docs/garmin-sync-ops.md`, `docs/garmin-api-sync-investigation.md`
 
 ---
 
-## 1. 設計ゴール
+## 0. 最初に守ること（必読）
 
-| 要件 | 方針 |
+### Phase 1 で使えるもの / 使えないもの
+
+| 利用可 | Phase 1 未対応（空でも正常） |
 |---|---|
-| トリガーで取得 | Claude が **同期リクエストを発行** → ジョブが実行 → 完了後に読み取り |
-| Claude から分析 | **Postgres JSONB + View**（FIT バイナリは Claude 非対応のため同期時に JSON 化） |
-| 個人 1〜2 人 | 汎用 UI 不要。テーブル + ドキュメントで足りる |
+| ワークアウト詳細（FIT + API） | 日次 Garmin（HRV / Body Battery / Training Readiness 等） |
+| View: `garmin_activity_claude_summary` | View: `garmin_daily_claude` |
+| View: `garmin_activity_claude` | `garmin_sync_request` の `scope=daily` / `all` |
+| `garmin_sync_request` の `scope=activities` | 全履歴の自動バックフィル |
+
+**`garmin_daily_archive` や `garmin_daily_claude` が 0 件なのは失敗ではない。** Phase 1 では日次 sync ジョブが未実装。
+
+### 同期完了の判定 — `status=complete` だけでは足りない
+
+`garmin_sync_request.status = complete` は **「ジョブが例外なく終了した」** 意味であり、**データが取れた保証ではない**。
+
+| status | 意味 |
+|---|---|
+| `pending` | キュー待ち。Sync Job 未実行 |
+| `running` | 処理中 |
+| `complete` | ジョブ終了。**0 件でも complete になりうる** |
+| `failed` | 例外発生。`error_message` を確認 |
+| `partial` | 一部 activity で FIT 等が失敗（archive 側の `sync_status`） |
+
+**分析前に必ず確認:**
+
+1. `garmin_activity_claude_summary` に対象期間の行があるか
+2. 無ければ同期依頼 → ジョブ実行待ち → **再度 summary を確認**
+3. summary が 0 件のままなら「期間内に Garmin activity なし」または「同期空振り」と報告する
+
+**`garmin_sync_request` が complete なのに summary が空、という組み合わせは起こりうる。** 認証失敗と決め打ちしない。
+
+### 読む View の優先順位
+
+| 用途 | 使うもの | 使わないもの |
+|---|---|---|
+| 一覧・会話開始 | `garmin_activity_claude_summary` | `garmin_activity_archive`（内部テーブル） |
+| 1 件の深掘り | `garmin_activity_claude` | 生テーブルへの直接 SELECT |
+| 日次・回復 | **Phase 1 では使わない** | `garmin_daily_claude` |
+
+FIT バイナリ（Storage）は Claude から読めない。`fit_parsed` / `api_responses` の JSON を使う。
 
 ---
 
-## 2. Claude の既存アクセス経路（ketolog）
+## 1. 前提（MyVitalRelay と Supabase）
 
-ケトログ v1.66+ の Claude 連携は **MCP ではなく Supabase REST** を直接叩く:
-
-1. ketolog 設定画面で refresh_token を発行
-2. `POST /auth/v1/token?grant_type=refresh_token` → access_token
-3. `GET /rest/v1/{table}?select=...` + Bearer（RLS で本人データのみ）
-
-既に Claude が読んでいる例:
-
-```http
-GET /rest/v1/training_log?select=*&date=gte.2026-07-01&order=start_time.desc
-GET /rest/v1/food_log?select=*&date=eq.2026-07-10
-```
-
-Garmin 詳細も **同じ経路** で読めるようにする（新テーブル + View）。
+- Garmin 詳細同期は **MyVitalRelay** の機能。ketolog 等の他アプリとは **論理分離**（同じ Supabase プロジェクトを同居利用しているだけ）。
+- Claude は **Supabase PostgREST + RLS** でアクセスする（refresh_token → access_token → Bearer）。
+- RLS により **ログインユーザー本人の `user_id` の行のみ** 読める。
+- ワークアウト概要の正: `training_log`（MyVitalRelay / HealthKit リレー）
+- Garmin 詳細（FIT 解析・API 全量）の正: `garmin_activity_archive` → View 経由で読む
 
 ---
 
-## 3. 全体フロー
+## 2. 全体フロー
 
 ```
 Garmin Watch → Garmin Connect → HealthKit
                                     │
                                     ▼
-                          MyVitalRelay（ワークアウト検知）
+                          MyVitalRelay（iOS 同期）
                                     │
                     ┌───────────────┴───────────────┐
                     ▼                               ▼
             training_log upsert          garmin_sync_request INSERT
-            (概要データ)                    (trigger_source=healthkit)
+            (概要: 距離・HR・RPE 等)         (trigger_source=healthkit)
                                                     │
 Claude（会話中）──INSERT garmin_sync_request────────┤
 (trigger_source=claude)                             │
                     │                               ▼
-                    │                    Garmin Sync Job (Python)
-                    │                    GHA: webhook即時 / cron 10分
+                    │                    Garmin Sync Job (GitHub Actions)
                     │                               │
                     └────────SELECT─────────────────┤
-                              garmin_activity_claude (VIEW)
+                              garmin_activity_claude_* (View)
 ```
 
-### トリガー源（2 系統）
-
-| トリガー | 発火元 | タイミング |
-|---|---|---|
-| **healthkit** | MyVitalRelay `SyncEngine` | Garmin ワークアウト upsert 直後 |
-| **claude** | Claude 会話 | 分析前に不足データを補完 |
-
-**ポイント:** iOS は Garmin 認証を持たない。`garmin_sync_request` への INSERT のみ。
-
-### 即時実行（HealthKit 検知時）
-
-INSERT 後 **数分待たず** FIT 取得を走らせるには、Supabase Database Webhook を設定:
-
-1. `garmin_sync_request` INSERT（`trigger_source=healthkit`）を監視
-2. GitHub `repository_dispatch` type `garmin-sync` を POST
-
-→ Phase 1 実装時に Webhook 設定手順を README に記載。cron 10 分はフォールバック。
+| trigger_source | 誰が INSERT するか |
+|---|---|
+| `healthkit` | MyVitalRelay — Garmin ワークアウト upsert 後 |
+| `claude` | Claude — 分析前に不足データを補完 |
+| `manual` | 運用者 / workflow 手動実行 |
 
 ---
 
-## 4. トリガー: `garmin_sync_request`
+## 3. PostgREST アクセス例
 
-Claude が同期を **依頼するキュー**。
+認証済み Bearer トークンで:
 
-### 4.1 スキーマ
-
-```sql
-CREATE TABLE garmin_sync_request (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid NOT NULL REFERENCES auth.users(id),
-  scope text NOT NULL CHECK (scope IN ('activities', 'daily', 'all')),
-  date_from date NOT NULL,
-  date_to date NOT NULL,
-  trigger_source text NOT NULL DEFAULT 'claude'
-    CHECK (trigger_source IN ('healthkit', 'claude', 'manual')),
-  status text NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending', 'running', 'complete', 'partial', 'failed')),
-  progress jsonb NOT NULL DEFAULT '{}'::jsonb,
-  error_message text,
-  requested_at timestamptz NOT NULL DEFAULT now(),
-  started_at timestamptz,
-  completed_at timestamptz
-);
+```http
+GET /rest/v1/training_log?select=id,date,discipline,distance_km,rpe,condition_notes,data_source&date=eq.2026-07-10&data_source=eq.garmin
 ```
 
-| trigger_source | 発火元 |
-|---|---|
-| `healthkit` | MyVitalRelay — Garmin ワークアウト upsert 後に自動 INSERT |
-| `claude` | Claude 会話 — 分析前の手動依頼 |
-| `manual` | デバッグ / workflow_dispatch |
+Garmin 詳細（一覧）:
 
-### 4.2 Claude の操作例
+```http
+GET /rest/v1/garmin_activity_claude_summary?training_log_date=eq.2026-07-10&select=activity_name,cadence_spm,avg_power_w,training_log_id,garmin_activity_id,synced_at
+```
 
-**同期依頼（先週のアクティビティ）:**
+Garmin 詳細（1 件深掘り）:
+
+```http
+GET /rest/v1/garmin_activity_claude?training_log_id=eq.{uuid}&select=activity_name,summary,fit_parsed,api_responses,fit_parsed_in_storage,api_responses_in_storage
+```
+
+PostgREST では `api_responses->get_activity_splits` のような JSON path フィルタは使えない。深掘り時は `api_responses` 列全体を select し、JSON 内を解析する。
+
+大型 JSON（512KB 超）は Storage 退避。View の `fit_parsed_in_storage` / `api_responses_in_storage` が `true` ならインライン JSON は空 `{}` で正常。
+
+---
+
+## 4. ワークアウト詳細分析の手順（Phase 1）
+
+### Step 1: 対象セッションを特定
+
+```http
+GET /rest/v1/training_log?select=id,date,discipline,start_time,rpe,condition_notes&date=gte.2026-07-07&date=lte.2026-07-12&data_source=eq.garmin&order=start_time.desc
+```
+
+主観データ（RPE, condition_notes）は `training_log` にある。Garmin 詳細と **統合して** 回答する。
+
+### Step 2: Garmin 詳細があるか確認（summary View）
+
+```http
+GET /rest/v1/garmin_activity_claude_summary?training_log_id=eq.{training_log_id}&select=*
+```
+
+または日付で:
+
+```http
+GET /rest/v1/garmin_activity_claude_summary?training_log_date=eq.2026-07-10&select=*
+```
+
+**行があれば Step 4 へ。** 無ければ Step 3。
+
+### Step 3: 同期依頼（必要な場合のみ）
 
 ```http
 POST /rest/v1/garmin_sync_request
@@ -120,198 +152,112 @@ Prefer: return=representation
 
 {
   "scope": "activities",
-  "date_from": "2026-07-05",
-  "date_to": "2026-07-11"
+  "date_from": "2026-07-09",
+  "date_to": "2026-07-11",
+  "trigger_source": "claude"
 }
 ```
 
-`user_id` は RLS / default trigger で自動付与（実装時に `auth.uid()` default または DB trigger）。
+- `date_from` / `date_to` は分析対象日 **±1 日** 程度
+- `scope` は Phase 1 では **`activities` のみ**（`daily` / `all` はジョブが拒否する）
+- `user_id` は RLS / default で自動付与
 
-**進捗確認:**
-
-```http
-GET /rest/v1/garmin_sync_request?id=eq.{request_id}&select=id,status,progress,error_message,completed_at
-```
-
-**既存データ確認（同期不要か判断）:**
+進捗確認:
 
 ```http
-GET /rest/v1/garmin_activity_archive?select=garmin_activity_id,synced_at&start_time_local=gte.2026-07-05T00:00:00+09:00&start_time_local=lte.2026-07-11T23:59:59+09:00
+GET /rest/v1/garmin_sync_request?id=eq.{request_id}&select=id,status,error_message,completed_at
 ```
 
-→ 期間内の activity が揃っていれば ① をスキップして ③ へ。
+**待機:** Sync Job は GitHub Actions「Garmin Sync」で実行される。Phase 1 では cron 自動実行は信頼性が低く、**ユーザーに workflow 手動実行を依頼してもよい**。Webhook 設定後（Phase 1.5）は数十秒〜数分。
 
-### 4.3 ジョブ側
+**`status=complete` になったら Step 2 をやり直す。** summary に行が無ければ「同期空振り」と報告し、`error_message` や期間を確認する。
 
-| トリガー | 動作 |
+### Step 4: 深掘り分析
+
+```http
+GET /rest/v1/garmin_activity_claude?garmin_activity_id=eq.{id}&select=activity_name,summary,fit_parsed,api_responses
+```
+
+分析に使える JSON キー例:
+
+- `api_responses.get_activity_splits` — ラップ分割
+- `api_responses.get_activity_hr_in_timezones` — 心拍ゾーン
+- `api_responses.get_activity_exercise_sets` — 筋トレセット
+- `fit_parsed.messages` — FIT 全メッセージ（ラップ・記録等）
+
+---
+
+## 5. 日次データ（Training Readiness / HRV 等）— Phase 1 未対応
+
+**Phase 1 では日次 Garmin 分析を行わない。**
+
+以下は Phase 1.5 で sync ジョブ実装予定:
+
+- `garmin_daily_archive` / View `garmin_daily_claude`
+- `scope=daily` の `garmin_sync_request`
+- HRV, Body Battery, Training Readiness, Sleep 等
+
+ユーザーが回復状態を聞いてきた場合:
+
+- `training_log` の直近セッション、`sleep_segment`（MyVitalRelay リレー）等 **既存テーブル** で答えられる範囲で回答
+- Garmin 日次データが必要なら「Phase 1.5 で対応予定」と伝える
+- **`garmin_daily_claude` が空なのを sync 失敗と解釈しない**
+
+---
+
+## 6. 自動同期の範囲（バックフィル）
+
+HealthKit 経由の自動投入は **直近約 14 日** の Garmin ワークアウト upsert 分が対象。全履歴の自動取得はしない。
+
+| 経路 | 取得範囲 |
 |---|---|
-| **cron 10分** | `status=pending` を 1 件ずつ `running` → 同期 → `complete` |
-| **workflow_dispatch** | 手動 / Claude から即時実行（`request_id` 指定） |
+| iPhone 同期（healthkit） | upsert された Garmin ワークアウトの日付 min〜max |
+| Claude 手動依頼 | 指定した `date_from`〜`date_to` |
+| 全履歴一括 | Phase 2（目安 90 日バックフィル） |
 
 ---
 
-## 5. Claude 向けデータ配置
+## 7. よくある誤解
 
-### 5.1 原則
-
-| データ | 保存 | Claude が読む |
-|---|---|---|
-| FIT 原データ (.fit) | Supabase Storage（アーカイブ） | ❌ 直接不可 |
-| FIT パース JSON | `garmin_activity_archive.fit_parsed` JSONB | ✅ |
-| API 全レスポンス | `garmin_activity_archive.api_responses` JSONB | ✅ |
-| 日次 API 全レスポンス | `garmin_daily_archive.api_responses` JSONB | ✅ |
-| 分析用サマリー | View `garmin_activity_claude_summary` | ✅ 一覧・会話開始時 |
-| 分析用詳細 | View `garmin_activity_claude` | ✅ 単一 activity 深掘り |
-
-大型 JSON（512KB 超）は Storage 退避。View の `fit_parsed_in_storage` / `api_responses_in_storage` で判定。
-
-同期ジョブ: `scripts/garmin_sync_job.py`。運用: `docs/garmin-sync-ops.md`。
-
-### 5.2 `garmin_activity_archive`（Claude 読取対象）
-
-```sql
-CREATE TABLE garmin_activity_archive (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid NOT NULL REFERENCES auth.users(id),
-  garmin_activity_id bigint NOT NULL,
-  activity_type_key text,
-  activity_name text,
-  start_time_local timestamptz,
-  duration_sec numeric,
-  -- Claude 向け（PostgREST で直接 select 可能）
-  summary jsonb NOT NULL DEFAULT '{}'::jsonb,       -- get_activity の要約
-  fit_parsed jsonb NOT NULL DEFAULT '{}'::jsonb,    -- FIT 全メッセージを JSON 化
-  api_responses jsonb NOT NULL DEFAULT '{}'::jsonb, -- splits / zones / exercise_sets 等
-  -- アーカイブ（Claude 非経由）
-  fit_storage_path text,                            -- Storage 内 zip（原データ保全）
-  training_log_id uuid REFERENCES training_log(id),
-  sync_request_id uuid REFERENCES garmin_sync_request(id),
-  sync_status text NOT NULL DEFAULT 'complete',
-  synced_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (user_id, garmin_activity_id)
-);
-```
-
-### 5.3 View: 2 段構成
-
-**一覧・会話開始:** `garmin_activity_claude_summary`（軽量、JSONB なし）
-
-```http
-GET /rest/v1/garmin_activity_claude_summary?training_log_date=eq.2026-07-10&select=activity_name,cadence_spm,avg_power_w,training_log_id
-```
-
-**単一 activity 深掘り:** `garmin_activity_claude`（`garmin_activity_id` で絞る）
-
-```http
-GET /rest/v1/garmin_activity_claude?garmin_activity_id=eq.19876543210&select=activity_name,summary,fit_parsed,api_responses
-```
-
-PostgREST では `api_responses->get_activity_splits` のような JSON path フィルタは使えない。深掘り時は `api_responses` 列全体を select し、Claude が JSON 内を解析する。
-
-### 5.4 日次: `garmin_daily_claude`
-
-```sql
-CREATE VIEW garmin_daily_claude
-WITH (security_invoker = true)
-AS
-SELECT
-  user_id,
-  date,
-  synced_at,
-  api_responses->'get_training_readiness' AS training_readiness,
-  api_responses->'get_hrv_data' AS hrv,
-  api_responses->'get_body_battery' AS body_battery,
-  api_responses->'get_sleep_data' AS sleep,
-  api_responses
-FROM garmin_daily_archive;
-```
+| 誤解 | 正しい理解 |
+|---|---|
+| `complete` = データ取得成功 | ジョブ終了のみ。summary を必ず確認 |
+| `garmin_daily_claude` が空 = 失敗 | Phase 1 では常に空で正常 |
+| `garmin_activity_archive` を直接見る | View を使う（§0 参照） |
+| 認証未設定で complete になる | 認証失敗は通常 `failed`。complete で summary 空なら空振り |
+| 10 分待てば必ず cron 実行 | Phase 1 では cron 非信頼。手動 workflow 実行が確実 |
 
 ---
 
-## 6. Claude の会話フロー（推奨プロンプト/手順）
+## 8. スキーマ参照（簡略）
 
-### 6.1 ランニング詳細分析
+### `garmin_sync_request` — 同期依頼キュー
 
-1. `training_log` で対象セッション特定（`data_source=garmin`）
-2. `garmin_activity_claude?training_log_id=eq.{id}` を確認
-3. 無ければ `garmin_sync_request` を INSERT（`date_from`/`date_to` をその日 ±1 日）
-4. `status=complete` までポーリング（**Webhook 未設定時は最大 10 分**。ユーザーに待機を伝える）
-5. `api_responses->get_activity_splits` / `fit_parsed->laps` 等でラップ分析
-6. `training_log.rpe` / `condition_notes` と Garmin 客観データを統合して回答
+| 列 | 説明 |
+|---|---|
+| `scope` | `activities`（Phase 1 有効）/ `daily` / `all` |
+| `date_from`, `date_to` | 取得期間 |
+| `status` | `pending` → `running` → `complete` / `failed` |
+| `error_message` | `failed` 時の理由 |
+| `trigger_source` | `healthkit` / `claude` / `manual` |
 
-### 6.2 Training Readiness / 回復
+### `garmin_activity_claude_summary` — 一覧 View（**最初に見る**）
 
-1. `garmin_daily_claude?date=eq.2026-07-12`
-2. 無ければ `garmin_sync_request` scope=`daily`
-3. `training_readiness`, `hrv`, `body_battery` を解釈
+`training_log` と JOIN 済み。`cadence_spm`, `avg_power_w`, `training_log_id`, `garmin_activity_id` 等。
 
----
+### `garmin_activity_claude` — 詳細 View（**深掘り時**）
 
-## 7. FIT → JSON（Claude 向け変換）
-
-同期ジョブ内で実施:
-
-```python
-import fitparse
-
-def fit_to_json(fit_bytes: bytes) -> dict:
-    fit = fitparse.FitFile(BytesIO(fit_bytes))
-    messages = []
-    for msg in fit.get_messages():
-        messages.append({
-            "name": msg.name,
-            "fields": {f.name: f.value for f in msg.fields},
-        })
-    return {"messages": messages, "message_count": len(messages)}
-```
-
-- **全メッセージ保持**（ユーザー要件「FIT 全部」に対応）
-- サイズが大きい場合: `fit_parsed` は Storage に退避し、View には `fit_parsed_storage_path` のみ（閾値 1MB 等）
-- Claude 深掘り時: `GET ...&select=fit_parsed` または splits API 部分だけ select
+`summary`, `fit_parsed`, `api_responses`（大型 JSONB）を含む。
 
 ---
 
-## 8. 即時トリガー（オプション）
-
-cron 10 分待ちが長い場合:
-
-```yaml
-# .github/workflows/garmin-sync.yml
-on:
-  workflow_dispatch:
-    inputs:
-      request_id:
-        description: garmin_sync_request.id
-        required: true
-  schedule:
-    - cron: '*/10 * * * *'  # pending キュー処理
-```
-
-Claude から即時 dispatch するには、将来 ketolog に薄いプロキシを追加:
-
-```
-POST /api/garmin-sync/trigger  { "request_id": "..." }
-  → GitHub API workflow_dispatch（server-side PAT）
-```
-
-**Phase 1 では cron + 手動 dispatch で十分。** ketolog プロキシは Phase 2。
-
----
-
-## 9. ケトログ Claude 連携ガイドへの追記案
-
-`packages/domain/src/claude-integration.ts` の `buildClaudeIntegrationUsageGuide()` に追記:
-
-- 利用可能テーブル: `garmin_sync_request`, `garmin_activity_claude`, `garmin_daily_claude`
-- 同期依頼 → 待機 → 分析 の 3 ステップ
-- `training_log` との JOIN 例
-
----
-
-## 10. Phase 更新
+## 9. 今後の Phase（MyVitalRelay）
 
 | Phase | 内容 |
 |---|---|
-| **1** | DDL（request + archive + views）+ Sync Job + cron |
-| **2** | FIT parse 込み + Storage アーカイブ |
-| **3** | ketolog ガイド追記 + 即時 trigger API（任意） |
+| **1**（現在） | ワークアウト詳細 sync + Claude View。手動 workflow 運用 |
+| **1.5** | Webhook 即時トリガー + 日次 sync（`garmin_daily_claude` 有効化） |
+| **2** | 過去データ一括バックフィル（目安 90 日） |
+| **3** | 本ガイドの整備・エラーハンドリング改善（0 件 complete 検知等） |
+
+ketolog 側の変更は不要。Garmin 連携は MyVitalRelay + Supabase 内で完結する。
