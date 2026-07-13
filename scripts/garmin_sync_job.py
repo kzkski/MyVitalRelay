@@ -79,15 +79,26 @@ def login_garmin(sb: Any, user_id: str, email: str, password: str) -> Garmin:
         .maybe_single()
         .execute()
     )
-    if token_row and token_row.get("token_store"):
+    tokenstore = (
+        json.dumps(token_row["token_store"])
+        if token_row and token_row.get("token_store")
+        else None
+    )
+
+    if tokenstore and len(tokenstore) > 512:
+        api.login(tokenstore=tokenstore)
+    elif tokenstore:
         try:
-            api.loads(json.dumps(token_row["token_store"]))
+            api.client.loads(tokenstore)
+            api.get_user_profile()
         except Exception:
-            pass
-    api.login()
+            api.login()
+    else:
+        api.login()
+
     sb.table("garmin_oauth_tokens").upsert({
         "user_id": user_id,
-        "token_store": json.loads(api.dumps()),
+        "token_store": json.loads(api.client.dumps()),
         "updated_at": datetime.now(UTC).isoformat(),
     }).execute()
     return api
