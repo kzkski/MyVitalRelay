@@ -95,3 +95,25 @@ def fit_to_json(fit_bytes: bytes) -> dict[str, Any]:
 def is_postgres_unique_violation(error: Exception) -> bool:
     message = str(error).lower()
     return "23505" in message or "duplicate" in message or "unique constraint" in message
+
+
+def response_data(response: Any) -> Any:
+    """supabase-py の execute() 結果から data を安全に取り出す。"""
+    if response is None:
+        return None
+    return getattr(response, "data", None)
+
+
+def maybe_single_row(response: Any) -> dict[str, Any] | None:
+    """maybe_single().execute() の結果を 1 行 dict に正規化する。
+
+    supabase-py 2.x では 0 行時に execute() 自体が None を返す。
+    """
+    data = response_data(response)
+    if data is None:
+        return None
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list):
+        return data[0] if data else None
+    return None

@@ -11,7 +11,9 @@ from garmin_sync_lib import (  # noqa: E402
     enqueue_date_range,
     inline_or_storage_plan,
     is_postgres_unique_violation,
+    maybe_single_row,
     parse_garmin_start_time,
+    response_data,
 )
 
 
@@ -58,6 +60,28 @@ def test_is_postgres_unique_violation() -> None:
     assert not is_postgres_unique_violation(Exception("connection refused"))
 
 
+class _FakeResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+def test_response_data_handles_none_execute() -> None:
+    assert response_data(None) is None
+    assert response_data(_FakeResponse([{"id": 1}])) == [{"id": 1}]
+
+
+def test_maybe_single_row_normalizes_supabase_responses() -> None:
+    assert maybe_single_row(None) is None
+    assert maybe_single_row(_FakeResponse(None)) is None
+    assert maybe_single_row(_FakeResponse({"sync_status": "complete"})) == {
+        "sync_status": "complete",
+    }
+    assert maybe_single_row(_FakeResponse([{"sync_status": "partial"}])) == {
+        "sync_status": "partial",
+    }
+    assert maybe_single_row(_FakeResponse([])) is None
+
+
 if __name__ == "__main__":
     test_parse_garmin_start_time_prefers_gmt()
     test_parse_garmin_start_time_local_as_jst()
@@ -65,4 +89,6 @@ if __name__ == "__main__":
     test_inline_or_storage_plan_small()
     test_inline_or_storage_plan_large()
     test_is_postgres_unique_violation()
+    test_response_data_handles_none_execute()
+    test_maybe_single_row_normalizes_supabase_responses()
     print("all tests passed")

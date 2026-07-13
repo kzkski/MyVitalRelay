@@ -29,7 +29,9 @@ from garmin_sync_lib import (
     fit_to_json,
     inline_or_storage_plan,
     json_safe,
+    maybe_single_row,
     parse_garmin_start_time,
+    response_data,
 )
 
 JSON_INLINE_MAX = int(os.environ.get("JSON_INLINE_MAX_BYTES", str(JSON_INLINE_MAX_DEFAULT)))
@@ -70,16 +72,16 @@ def load_users() -> list[dict[str, str]]:
 
 def login_garmin(sb: Any, user_id: str, email: str, password: str) -> Garmin:
     api = Garmin(email, password)
-    row = (
+    token_row = maybe_single_row(
         sb.table("garmin_oauth_tokens")
         .select("token_store")
         .eq("user_id", user_id)
         .maybe_single()
         .execute()
     )
-    if row.data and row.data.get("token_store"):
+    if token_row and token_row.get("token_store"):
         try:
-            api.loads(json.dumps(row.data["token_store"]))
+            api.loads(json.dumps(token_row["token_store"]))
         except Exception:
             pass
     api.login()
@@ -100,7 +102,7 @@ def claim_request(sb: Any, request_id: str | None) -> dict[str, Any] | None:
     q = sb.table("garmin_sync_request").select("*").eq("status", "pending").order("requested_at")
     if request_id:
         q = q.eq("id", request_id)
-    rows = q.limit(1).execute().data or []
+    rows = response_data(q.limit(1).execute()) or []
     if not rows:
         return None
     req = rows[0]
@@ -111,9 +113,10 @@ def claim_request(sb: Any, request_id: str | None) -> dict[str, Any] | None:
         .eq("status", "pending")
         .execute()
     )
-    if not updated.data:
+    updated_rows = response_data(updated) or []
+    if not updated_rows:
         return None
-    return updated.data[0]
+    return updated_rows[0]
 
 
 def finish_request(sb: Any, req_id: str, status: str, error: str | None = None) -> None:
@@ -127,7 +130,7 @@ def finish_request(sb: Any, req_id: str, status: str, error: str | None = None) 
 
 
 def already_synced(sb: Any, user_id: str, activity_id: int) -> bool:
-    row = (
+    row = maybe_single_row(
         sb.table("garmin_activity_archive")
         .select("sync_status")
         .eq("user_id", user_id)
@@ -135,7 +138,7 @@ def already_synced(sb: Any, user_id: str, activity_id: int) -> bool:
         .maybe_single()
         .execute()
     )
-    return bool(row.data and row.data.get("sync_status") == "complete")
+    return row is not None and row.get("sync_status") == "complete"
 
 
 def upload_json(sb: Any, path: str, payload: dict[str, Any]) -> str:
