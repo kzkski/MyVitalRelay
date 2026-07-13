@@ -31,11 +31,9 @@ except ImportError:
     print("garminconnect が未インストールです: pip install garminconnect curl_cffi", file=sys.stderr)
     sys.exit(1)
 
+from garmin_fetchers import activity_fetchers_for_export, daily_fetchers_for_export
 
-# --- アクティビティ API（読み取り系すべて） ---
 ACTIVITY_FETCHERS: dict[str, Callable[[Garmin, str], Any]] = {}
-
-# --- 日次 API（読み取り系すべて） ---
 DAILY_FETCHERS: dict[str, Callable[[Garmin, str], Any]] = {}
 
 
@@ -44,45 +42,8 @@ def _register_fetchers() -> None:
     global ACTIVITY_FETCHERS, DAILY_FETCHERS
     if ACTIVITY_FETCHERS:
         return
-
-    ACTIVITY_FETCHERS = {
-        "get_activity": lambda api, aid: api.get_activity(aid),
-        "get_activity_details": lambda api, aid: api.get_activity_details(aid),
-        "get_activity_splits": lambda api, aid: api.get_activity_splits(aid),
-        "get_activity_typed_splits": lambda api, aid: api.get_activity_typed_splits(aid),
-        "get_activity_split_summaries": lambda api, aid: api.get_activity_split_summaries(aid),
-        "get_activity_weather": lambda api, aid: api.get_activity_weather(aid),
-        "get_activity_hr_in_timezones": lambda api, aid: api.get_activity_hr_in_timezones(aid),
-        "get_activity_power_in_timezones": lambda api, aid: api.get_activity_power_in_timezones(aid),
-        "get_activity_exercise_sets": lambda api, aid: api.get_activity_exercise_sets(aid),
-        "get_activity_gear": lambda api, aid: api.get_activity_gear(aid),
-    }
-
-    DAILY_FETCHERS = {
-        "get_stats": lambda api, d: api.get_stats(d),
-        "get_user_summary": lambda api, d: api.get_user_summary(d),
-        "get_stats_and_body": lambda api, d: api.get_stats_and_body(d),
-        "get_sleep_data": lambda api, d: api.get_sleep_data(d),
-        "get_hrv_data": lambda api, d: api.get_hrv_data(d),
-        "get_training_readiness": lambda api, d: api.get_training_readiness(d),
-        "get_training_status": lambda api, d: api.get_training_status(d),
-        "get_body_battery": lambda api, d: api.get_body_battery(d),
-        "get_body_battery_events": lambda api, d: api.get_body_battery_events(d),
-        "get_stress_data": lambda api, d: api.get_stress_data(d),
-        "get_all_day_stress": lambda api, d: api.get_all_day_stress(d),
-        "get_heart_rates": lambda api, d: api.get_heart_rates(d),
-        "get_resting_heart_rate": lambda api, d: api.get_resting_heart_rate(d),
-        "get_steps_data": lambda api, d: api.get_steps_data(d),
-        "get_respiration_data": lambda api, d: api.get_respiration_data(d),
-        "get_spo2_data": lambda api, d: api.get_spo2_data(d),
-        "get_max_metrics": lambda api, d: api.get_max_metrics(d),
-        "get_intensity_minutes_data": lambda api, d: api.get_intensity_minutes_data(d),
-        "get_running_tolerance": lambda api, d: api.get_running_tolerance(d),
-        "get_body_composition": lambda api, d: api.get_body_composition(d),
-        "get_floors": lambda api, d: api.get_floors(d),
-        "get_daily_steps": lambda api, d: api.get_daily_steps(d, d),
-        "get_lifestyle_logging_data": lambda api, d: api.get_lifestyle_logging_data(d),
-    }
+    ACTIVITY_FETCHERS = activity_fetchers_for_export()
+    DAILY_FETCHERS = daily_fetchers_for_export()
 
 
 def _env(name: str) -> str:
