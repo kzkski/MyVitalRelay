@@ -40,7 +40,7 @@ supabase db push --db-url "$PROD_DATABASE_URL"
 適用後、Dashboard で以下が存在することを確認:
 
 - テーブル: `garmin_sync_request`, `garmin_activity_archive`, `garmin_daily_archive`, `garmin_oauth_tokens`
-- View: `garmin_activity_claude_summary`, `garmin_daily_claude`
+- View: `garmin_activity_claude_summary`, `garmin_daily_summary`, `garmin_daily_claude`
 - Storage バケット: `garmin-fit`, `garmin-json`
 - トリガー: `garmin_sync_request_notify_dispatch`（Webhook 用）
 - Edge Function: `garmin-sync-dispatch`
