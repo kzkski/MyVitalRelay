@@ -7,10 +7,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+from datetime import time
+
 from garmin_sync_lib import (  # noqa: E402
     enqueue_date_range,
     inline_or_storage_plan,
     is_postgres_unique_violation,
+    json_safe,
     maybe_single_row,
     parse_garmin_start_time,
     response_data,
@@ -65,6 +68,10 @@ class _FakeResponse:
         self.data = data
 
 
+def test_json_safe_time() -> None:
+    assert json_safe(time(12, 30, 0)) == "12:30:00"
+
+
 def test_response_data_handles_none_execute() -> None:
     assert response_data(None) is None
     assert response_data(_FakeResponse([{"id": 1}])) == [{"id": 1}]
@@ -89,6 +96,7 @@ if __name__ == "__main__":
     test_inline_or_storage_plan_small()
     test_inline_or_storage_plan_large()
     test_is_postgres_unique_violation()
+    test_json_safe_time()
     test_response_data_handles_none_execute()
     test_maybe_single_row_normalizes_supabase_responses()
     print("all tests passed")

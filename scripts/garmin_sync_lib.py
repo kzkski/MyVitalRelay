@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from io import BytesIO
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,6 +17,12 @@ def json_safe(obj: Any) -> Any:
         return {"_type": "bytes", "length": len(obj)}
     if isinstance(obj, datetime):
         return obj.isoformat()
+    if isinstance(obj, date):
+        return obj.isoformat()
+    if isinstance(obj, time):
+        return obj.isoformat()
+    if isinstance(obj, timedelta):
+        return obj.total_seconds()
     if isinstance(obj, dict):
         return {k: json_safe(v) for k, v in obj.items()}
     if isinstance(obj, list):
