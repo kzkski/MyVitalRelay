@@ -238,3 +238,11 @@ PYTHONPATH=scripts python scripts/garmin_backfill.py
 | 90 日バックフィル workflow | |
 | `progress` + 空振り `partial` 判定 | |
 | **Supabase pg_net トリガー → GitHub dispatch** | Edge Function `garmin-sync-dispatch` |
+
+---
+
+## 9. 既知のデータギャップ
+
+| 項目 | 状態 | 備考 |
+|---|---|---|
+| `training_readiness` | FR255 で全日程 `[]` | 機種非搭載（955+ 専用）。HRV / Body Battery / sleep で代替。機種変更時に要再確認 |

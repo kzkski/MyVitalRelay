@@ -118,7 +118,7 @@ api.download_activity(activity_id, dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL
 | `get_stats` / `get_user_summary` | 日次サマリー |
 | `get_sleep_data` | 睡眠（Garmin スコア・HRV 含む） |
 | `get_hrv_data` | HRV |
-| `get_training_readiness` | Training Readiness |
+| `get_training_readiness` | Training Readiness（**955 等のみ。FR255 は常に `[]`**） |
 | `get_training_status` | Training Status |
 | `get_body_battery` / `get_body_battery_events` | Body Battery |
 | `get_stress_data` / `get_all_day_stress` | Stress |
