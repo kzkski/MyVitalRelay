@@ -1,0 +1,74 @@
+# Garmin 過去データバックフィル
+#
+# Secrets: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GARMIN_BACKFILL_USER_ID
+# 投入後、Garmin Sync workflow が pending を順次処理する。
+
+name: Garmin Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 遡及日数（デフォルト 90）
+        required: false
+        default: "90"
+        type: string
+      chunk_days:
+        description: 1 リクエストあたりの日数（デフォルト 14）
+        required: false
+        default: "14"
+        type: string
+      scope:
+        description: activities | daily | all
+        required: false
+        default: "activities"
+        type: choice
+        options:
+          - activities
+          - daily
+          - all
+
+jobs:
+  enqueue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install supabase
+
+      - name: Enqueue backfill requests
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GARMIN_BACKFILL_USER_ID: ${{ secrets.GARMIN_BACKFILL_USER_ID }}
+          GARMIN_BACKFILL_DAYS: ${{ inputs.days }}
+          GARMIN_BACKFILL_CHUNK_DAYS: ${{ inputs.chunk_days }}
+          GARMIN_BACKFILL_SCOPE: ${{ inputs.scope }}
+        run: PYTHONPATH=scripts python scripts/garmin_backfill.py
+
+  sync:
+    needs: enqueue
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install garminconnect curl_cffi fitparse supabase
+
+      - name: Run sync job (drain pending queue)
+        env:
+          GARMIN_SYNC_USERS: ${{ secrets.GARMIN_SYNC_USERS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: PYTHONPATH=scripts python scripts/garmin_sync_job.py

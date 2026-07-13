@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Garmin Sync Job — garmin_sync_request キューを処理する。
 
-Phase 1: scope=activities のみ。docs/garmin-sync-ops.md 参照。
+Phase 1.5+: scope=activities / daily / all
+Ops: docs/garmin-sync-ops.md
 """
 
 from __future__ import annotations
@@ -24,32 +25,22 @@ except ImportError:
     print("pip install garminconnect curl_cffi fitparse supabase", file=sys.stderr)
     sys.exit(1)
 
+from garmin_fetchers import ACTIVITY_FETCHER_NAMES, DAILY_FETCHER_NAMES, call_daily_fetcher
 from garmin_sync_lib import (
     JSON_INLINE_MAX_DEFAULT,
     fit_to_json,
     inline_or_storage_plan,
+    iter_dates,
     json_safe,
     maybe_single_row,
     parse_garmin_start_time,
+    resolve_request_status,
     response_data,
 )
 
 JSON_INLINE_MAX = int(os.environ.get("JSON_INLINE_MAX_BYTES", str(JSON_INLINE_MAX_DEFAULT)))
 STALE_MINUTES = 30
 PENDING_MAX_HOURS = 24
-
-ACTIVITY_FETCHERS = [
-    "get_activity",
-    "get_activity_details",
-    "get_activity_splits",
-    "get_activity_typed_splits",
-    "get_activity_split_summaries",
-    "get_activity_weather",
-    "get_activity_hr_in_timezones",
-    "get_activity_power_in_timezones",
-    "get_activity_exercise_sets",
-    "get_activity_gear",
-]
 
 
 def _env(name: str) -> str:
@@ -130,22 +121,42 @@ def claim_request(sb: Any, request_id: str | None) -> dict[str, Any] | None:
     return updated_rows[0]
 
 
-def finish_request(sb: Any, req_id: str, status: str, error: str | None = None) -> None:
+def finish_request(
+    sb: Any,
+    req_id: str,
+    status: str,
+    error: str | None = None,
+    progress: dict[str, Any] | None = None,
+) -> None:
     payload: dict[str, Any] = {
         "status": status,
         "completed_at": datetime.now(UTC).isoformat(),
     }
     if error:
         payload["error_message"] = error
+    if progress is not None:
+        payload["progress"] = progress
     sb.table("garmin_sync_request").update(payload).eq("id", req_id).execute()
 
 
-def already_synced(sb: Any, user_id: str, activity_id: int) -> bool:
+def already_synced_activity(sb: Any, user_id: str, activity_id: int) -> bool:
     row = maybe_single_row(
         sb.table("garmin_activity_archive")
         .select("sync_status")
         .eq("user_id", user_id)
         .eq("garmin_activity_id", activity_id)
+        .maybe_single()
+        .execute()
+    )
+    return row is not None and row.get("sync_status") == "complete"
+
+
+def already_synced_daily(sb: Any, user_id: str, day: str) -> bool:
+    row = maybe_single_row(
+        sb.table("garmin_daily_archive")
+        .select("sync_status")
+        .eq("user_id", user_id)
+        .eq("date", day)
         .maybe_single()
         .execute()
     )
@@ -169,12 +180,12 @@ def upload_fit_zip(sb: Any, user_id: str, activity_id: int, raw: bytes) -> str:
 
 
 def store_json_payload(
-    sb: Any, user_id: str, kind: str, activity_id: int, payload: dict[str, Any]
+    sb: Any, user_id: str, storage_path: str, payload: dict[str, Any]
 ) -> tuple[dict[str, Any], str | None]:
     inline, use_storage = inline_or_storage_plan(payload, JSON_INLINE_MAX)
     if not use_storage:
         return inline, None
-    path = f"{user_id}/activities/{activity_id}_{kind}.json"
+    path = f"{user_id}/{storage_path}"
     upload_json(sb, path, payload)
     inline["_storage_path"] = path
     return inline, path
@@ -182,16 +193,19 @@ def store_json_payload(
 
 def sync_activity(
     sb: Any, api: Garmin, user_id: str, act: dict[str, Any], request_id: str
-) -> None:
+) -> str:
+    """1 activity を同期。'synced' | 'skipped' を返す。"""
     aid = act.get("activityId")
-    if not aid or already_synced(sb, user_id, int(aid)):
-        return
+    if not aid:
+        return "skipped"
+    if already_synced_activity(sb, user_id, int(aid)):
+        return "skipped"
 
     aid_str = str(aid)
     api_responses: dict[str, Any] = {"list_summary": act}
     errors: list[dict[str, str]] = []
 
-    for name in ACTIVITY_FETCHERS:
+    for name in ACTIVITY_FETCHER_NAMES:
         fn = getattr(api, name, None)
         if fn:
             api_responses[name] = _try_call(fn, aid_str)
@@ -213,8 +227,12 @@ def sync_activity(
     if isinstance(summary, dict) and "_error" in summary:
         summary = act
 
-    inline_api, api_path = store_json_payload(sb, user_id, "api", int(aid), api_responses)
-    inline_fit, fit_path = store_json_payload(sb, user_id, "fit_parsed", int(aid), fit_parsed)
+    inline_api, api_path = store_json_payload(
+        sb, user_id, f"activities/{aid_str}_api.json", api_responses
+    )
+    inline_fit, fit_path = store_json_payload(
+        sb, user_id, f"activities/{aid_str}_fit_parsed.json", fit_parsed
+    )
 
     sync_status = "complete" if not errors else "partial"
     sb.table("garmin_activity_archive").upsert({
@@ -235,6 +253,67 @@ def sync_activity(
         "sync_errors": errors,
         "synced_at": datetime.now(UTC).isoformat(),
     }, on_conflict="user_id,garmin_activity_id").execute()
+    return "synced"
+
+
+def sync_daily(
+    sb: Any, api: Garmin, user_id: str, day: str, request_id: str
+) -> str:
+    """1 日分の日次 API を同期。'synced' | 'skipped' を返す。"""
+    if already_synced_daily(sb, user_id, day):
+        return "skipped"
+
+    api_responses: dict[str, Any] = {}
+    errors: list[dict[str, str]] = []
+    for name in DAILY_FETCHER_NAMES:
+        result = _try_call(call_daily_fetcher, api, name, day)
+        api_responses[name] = result
+        if isinstance(result, dict) and "_error" in result:
+            errors.append({"step": name, "error": str(result.get("message", result["_error"]))})
+
+    inline_api, api_path = store_json_payload(
+        sb, user_id, f"daily/{day}.json", api_responses
+    )
+    sync_status = "complete" if not errors else "partial"
+    sb.table("garmin_daily_archive").upsert({
+        "user_id": user_id,
+        "date": day,
+        "api_responses": inline_api,
+        "api_json_storage_path": api_path,
+        "sync_request_id": request_id,
+        "sync_status": sync_status,
+        "sync_errors": errors,
+        "synced_at": datetime.now(UTC).isoformat(),
+    }, on_conflict="user_id,date").execute()
+    return "synced"
+
+
+def sync_activities_for_range(
+    sb: Any, api: Garmin, user_id: str, date_from: str, date_to: str, request_id: str
+) -> dict[str, int]:
+    activities = api.get_activities_by_date(date_from, date_to)
+    counts = {"fetched": len(activities), "synced": 0, "skipped": 0}
+    for act in activities:
+        result = sync_activity(sb, api, user_id, act, request_id)
+        if result == "synced":
+            counts["synced"] += 1
+        else:
+            counts["skipped"] += 1
+    return counts
+
+
+def sync_daily_for_range(
+    sb: Any, api: Garmin, user_id: str, date_from: str, date_to: str, request_id: str
+) -> dict[str, int]:
+    days = iter_dates(date_from, date_to)
+    counts = {"fetched": len(days), "synced": 0, "skipped": 0}
+    for day in days:
+        result = sync_daily(sb, api, user_id, day, request_id)
+        if result == "synced":
+            counts["synced"] += 1
+        else:
+            counts["skipped"] += 1
+    return counts
 
 
 def process_request(sb: Any, req: dict[str, Any], users_by_id: dict[str, dict[str, str]]) -> None:
@@ -244,17 +323,41 @@ def process_request(sb: Any, req: dict[str, Any], users_by_id: dict[str, dict[st
         finish_request(sb, req["id"], "failed", f"No credentials for user {user_id}")
         return
 
-    if req["scope"] != "activities":
-        finish_request(sb, req["id"], "failed", f"Phase 1: scope={req['scope']} not supported")
+    scope = req["scope"]
+    if scope not in ("activities", "daily", "all"):
+        finish_request(sb, req["id"], "failed", f"Unsupported scope={scope}")
         return
 
     api = login_garmin(sb, user_id, cred["email"], cred["password"])
-    activities = api.get_activities_by_date(req["date_from"], req["date_to"])
-    for act in activities:
-        sync_activity(sb, api, user_id, act, req["id"])
+    date_from = req["date_from"]
+    date_to = req["date_to"]
 
-    sb.rpc("link_garmin_activity_training_log", {"p_user_id": user_id}).execute()
-    finish_request(sb, req["id"], "complete")
+    act_counts = {"fetched": 0, "synced": 0, "skipped": 0}
+    day_counts = {"fetched": 0, "synced": 0, "skipped": 0}
+    step_errors: list[str] = []
+
+    if scope in ("activities", "all"):
+        act_counts = sync_activities_for_range(sb, api, user_id, date_from, date_to, req["id"])
+        sb.rpc("link_garmin_activity_training_log", {"p_user_id": user_id}).execute()
+
+    if scope in ("daily", "all"):
+        day_counts = sync_daily_for_range(sb, api, user_id, date_from, date_to, req["id"])
+
+    status, error = resolve_request_status(
+        scope=scope,
+        activities_fetched=act_counts["fetched"],
+        activities_synced=act_counts["synced"],
+        activities_skipped=act_counts["skipped"],
+        daily_fetched=day_counts["fetched"],
+        daily_synced=day_counts["synced"],
+        daily_skipped=day_counts["skipped"],
+        step_errors=step_errors,
+    )
+    progress = {
+        "activities": act_counts,
+        "daily": day_counts,
+    }
+    finish_request(sb, req["id"], status, error, progress)
 
 
 def main() -> None:

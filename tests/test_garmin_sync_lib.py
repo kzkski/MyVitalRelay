@@ -10,12 +10,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from datetime import time
 
 from garmin_sync_lib import (  # noqa: E402
+    chunk_date_range,
     enqueue_date_range,
     inline_or_storage_plan,
     is_postgres_unique_violation,
+    iter_dates,
     json_safe,
     maybe_single_row,
     parse_garmin_start_time,
+    resolve_request_status,
     response_data,
 )
 
@@ -89,6 +92,40 @@ def test_maybe_single_row_normalizes_supabase_responses() -> None:
     assert maybe_single_row(_FakeResponse([])) is None
 
 
+def test_iter_dates_inclusive() -> None:
+    assert iter_dates("2026-07-10", "2026-07-12") == [
+        "2026-07-10",
+        "2026-07-11",
+        "2026-07-12",
+    ]
+    assert iter_dates("2026-07-12", "2026-07-10") == []
+
+
+def test_chunk_date_range() -> None:
+    assert chunk_date_range("2026-07-01", "2026-07-05", 2) == [
+        ("2026-07-01", "2026-07-02"),
+        ("2026-07-03", "2026-07-04"),
+        ("2026-07-05", "2026-07-05"),
+    ]
+
+
+def test_resolve_request_status_empty_activities() -> None:
+    status, err = resolve_request_status(scope="activities", activities_fetched=0)
+    assert status == "partial"
+    assert err is not None
+
+
+def test_resolve_request_status_all_skipped() -> None:
+    status, err = resolve_request_status(
+        scope="activities",
+        activities_fetched=3,
+        activities_synced=0,
+        activities_skipped=3,
+    )
+    assert status == "complete"
+    assert err is None
+
+
 if __name__ == "__main__":
     test_parse_garmin_start_time_prefers_gmt()
     test_parse_garmin_start_time_local_as_jst()
@@ -99,4 +136,8 @@ if __name__ == "__main__":
     test_json_safe_time()
     test_response_data_handles_none_execute()
     test_maybe_single_row_normalizes_supabase_responses()
+    test_iter_dates_inclusive()
+    test_chunk_date_range()
+    test_resolve_request_status_empty_activities()
+    test_resolve_request_status_all_skipped()
     print("all tests passed")

@@ -123,3 +123,75 @@ def maybe_single_row(response: Any) -> dict[str, Any] | None:
     if isinstance(data, list):
         return data[0] if data else None
     return None
+
+
+def iter_dates(date_from: str, date_to: str) -> list[str]:
+    """date_from..date_to（ISO date 文字列）の日付リスト。"""
+    start = date.fromisoformat(date_from)
+    end = date.fromisoformat(date_to)
+    if start > end:
+        return []
+    days: list[str] = []
+    current = start
+    while current <= end:
+        days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
+def chunk_date_range(
+    date_from: str, date_to: str, chunk_days: int
+) -> list[tuple[str, str]]:
+    """長期間を chunk_days 日単位の (from, to) に分割。"""
+    if chunk_days < 1:
+        raise ValueError("chunk_days must be >= 1")
+    days = iter_dates(date_from, date_to)
+    if not days:
+        return []
+    chunks: list[tuple[str, str]] = []
+    for i in range(0, len(days), chunk_days):
+        block = days[i : i + chunk_days]
+        chunks.append((block[0], block[-1]))
+    return chunks
+
+
+def resolve_request_status(
+    *,
+    scope: str,
+    activities_fetched: int = 0,
+    activities_synced: int = 0,
+    activities_skipped: int = 0,
+    daily_fetched: int = 0,
+    daily_synced: int = 0,
+    daily_skipped: int = 0,
+    step_errors: list[str] | None = None,
+) -> tuple[str, str | None]:
+    """garmin_sync_request の終了 status / error_message を決定。"""
+    errors = step_errors or []
+    if errors:
+        return "partial", "; ".join(errors)
+
+    if scope in ("activities", "all"):
+        if activities_fetched == 0 and scope == "activities":
+            return "partial", "No Garmin activities in date range"
+        if scope == "all" and activities_fetched == 0 and daily_fetched == 0:
+            return "partial", "No Garmin activities or daily data in date range"
+
+    if scope in ("daily", "all"):
+        if daily_fetched == 0 and scope == "daily":
+            return "partial", "No daily dates processed"
+
+    # 取得対象はあったがすべて idempotent skip → 成功扱い
+    if scope == "activities":
+        if activities_fetched > 0 and activities_synced == 0 and activities_skipped > 0:
+            return "complete", None
+    if scope == "daily":
+        if daily_fetched > 0 and daily_synced == 0 and daily_skipped > 0:
+            return "complete", None
+    if scope == "all":
+        act_done = activities_fetched == 0 or activities_synced > 0 or activities_skipped > 0
+        day_done = daily_fetched == 0 or daily_synced > 0 or daily_skipped > 0
+        if act_done and day_done:
+            return "complete", None
+
+    return "complete", None
