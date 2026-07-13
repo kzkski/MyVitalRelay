@@ -1,0 +1,42 @@
+name: Prod DB Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this migration is needed
+        required: true
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - "supabase/migrations/**"
+
+jobs:
+  migrate:
+    name: Backup and apply production migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Pre-migration full backup
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: |
+          set -eu
+          ts="$(date -u +%Y%m%dT%H%M%SZ)"
+          supabase db dump --db-url "$DATABASE_URL" -f "pre-full-${ts}.sql"
+          gzip "pre-full-${ts}.sql"
+
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: supabase db push --db-url "$DATABASE_URL"
