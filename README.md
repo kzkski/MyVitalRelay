@@ -11,6 +11,8 @@ HealthKit（読み取り専用）→ Supabase（書き込み専用）の一方�
 | 睡眠セグメント | `sleep_segment` |
 | 日次カロリー | `daily_activity_summary` |
 
+体組成（体重・体脂肪）は Intervals.icu wellness へも一方向 PUSH する（Issue #24、運用は `docs/interval-icu-sync-ops.md`）。
+
 Garmin 詳細（FIT / API JSON）同期は **Phase 1** で追加予定。設計は `docs/garmin-api-sync-investigation.md`、Mac 検証手順は `docs/garmin-phase1-mac-checklist.md`。
 
 ## セットアップ（Mac）
