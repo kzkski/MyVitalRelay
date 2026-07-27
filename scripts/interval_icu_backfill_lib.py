@@ -13,9 +13,9 @@ def round1(value: float) -> float:
 
 
 def pick_daily_metrics(samples: list[dict[str, Any]]) -> dict[str, float]:
-    """Pick latest weight_kg and body_fat_pct independently by measured_at."""
-    latest_weight: tuple[str, float] | None = None
-    latest_bf: tuple[str, float] | None = None
+    """Pick earliest weight_kg and body_fat_pct independently by measured_at."""
+    first_weight: tuple[str, float] | None = None
+    first_bf: tuple[str, float] | None = None
 
     for sample in samples:
         measured_at = str(sample.get("measured_at") or "")
@@ -27,22 +27,22 @@ def pick_daily_metrics(samples: list[dict[str, Any]]) -> dict[str, float]:
                 w = float(weight)
             except (TypeError, ValueError):
                 w = None
-            if w is not None and (latest_weight is None or measured_at > latest_weight[0]):
-                latest_weight = (measured_at, w)
+            if w is not None and (first_weight is None or measured_at < first_weight[0]):
+                first_weight = (measured_at, w)
 
         if body_fat is not None:
             try:
                 bf = float(body_fat)
             except (TypeError, ValueError):
                 bf = None
-            if bf is not None and (latest_bf is None or measured_at > latest_bf[0]):
-                latest_bf = (measured_at, bf)
+            if bf is not None and (first_bf is None or measured_at < first_bf[0]):
+                first_bf = (measured_at, bf)
 
     out: dict[str, float] = {}
-    if latest_weight is not None:
-        out["weight"] = round1(latest_weight[1])
-    if latest_bf is not None:
-        out["bodyFat"] = round1(latest_bf[1])
+    if first_weight is not None:
+        out["weight"] = round1(first_weight[1])
+    if first_bf is not None:
+        out["bodyFat"] = round1(first_bf[1])
     return out
 
 

@@ -14,7 +14,7 @@ import {
   wellnessPutUrl,
 } from "./lib.ts";
 
-Deno.test("pickDailyMetrics picks latest weight and bodyFat independently", () => {
+Deno.test("pickDailyMetrics picks earliest weight and bodyFat independently", () => {
   const metrics = pickDailyMetrics([
     {
       measured_at: "2026-07-27T01:00:00Z",
@@ -32,8 +32,8 @@ Deno.test("pickDailyMetrics picks latest weight and bodyFat independently", () =
       body_fat_pct: 14.0,
     },
   ]);
-  assertEquals(metrics.weight, 70.6); // latest weight at 03:00 (70.55)
-  assertEquals(metrics.bodyFat, 15.4); // latest bodyFat at 08:00
+  assertEquals(metrics.weight, 70.0); // first weight at 01:00
+  assertEquals(metrics.bodyFat, 14.0); // first bodyFat at 03:00 (before 08:00)
 });
 
 Deno.test("pickDailyMetrics empty", () => {

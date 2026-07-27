@@ -22,29 +22,30 @@ export function round1(value: number): number {
 }
 
 /**
- * Pick independent latest weight and body-fat for a calendar day.
+ * Pick independent first (earliest measured_at) weight and body-fat for a calendar day.
  * Weight and body fat may live on different HealthKit sample rows.
+ * Later same-day readings are ignored for Intervals.icu wellness.
  */
 export function pickDailyMetrics(samples: BodySample[]): DailyMetrics {
-  let latestWeight: { at: string; value: number } | null = null;
-  let latestBodyFat: { at: string; value: number } | null = null;
+  let firstWeight: { at: string; value: number } | null = null;
+  let firstBodyFat: { at: string; value: number } | null = null;
 
   for (const sample of samples) {
     if (sample.weight_kg != null && Number.isFinite(sample.weight_kg)) {
-      if (!latestWeight || sample.measured_at > latestWeight.at) {
-        latestWeight = { at: sample.measured_at, value: sample.weight_kg };
+      if (!firstWeight || sample.measured_at < firstWeight.at) {
+        firstWeight = { at: sample.measured_at, value: sample.weight_kg };
       }
     }
     if (sample.body_fat_pct != null && Number.isFinite(sample.body_fat_pct)) {
-      if (!latestBodyFat || sample.measured_at > latestBodyFat.at) {
-        latestBodyFat = { at: sample.measured_at, value: sample.body_fat_pct };
+      if (!firstBodyFat || sample.measured_at < firstBodyFat.at) {
+        firstBodyFat = { at: sample.measured_at, value: sample.body_fat_pct };
       }
     }
   }
 
   const out: DailyMetrics = {};
-  if (latestWeight) out.weight = round1(latestWeight.value);
-  if (latestBodyFat) out.bodyFat = round1(latestBodyFat.value);
+  if (firstWeight) out.weight = round1(firstWeight.value);
+  if (firstBodyFat) out.bodyFat = round1(firstBodyFat.value);
   return out;
 }
 

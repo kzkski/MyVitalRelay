@@ -54,6 +54,7 @@ HealthKit → iOS SyncEngine
 ```
 
 当日（Asia/Tokyo）の PUT のみ `?localDate=` を付与し、settings の「現在の体重」も更新する。
+日次の代表値は **その日の最初の測定**（`measured_at` 最小）。体重と体脂肪は独立に選ぶ。同日の後続測定は Intervals.icu 側の値を変えない（再 PUT しても同じ値に収束）。
 
 ---
 
@@ -102,7 +103,7 @@ GitHub Actions → **Interval.icu Drain** → Run workflow
 
 GitHub Actions → **Interval.icu Backfill** → Run workflow
 
-- `body_composition_sample` 全履歴を日次集約して `wellness-bulk` へ一括 PUT
+- `body_composition_sample` 全履歴を日次集約（**各日の最初の** weight / bodyFat）して `wellness-bulk` へ一括 PUT
 - **localDate は付けない**（過去日で settings 現在体重を汚染しない）
 - 常時自動バックフィルはしない。再実行は必要なときだけ手動
 
