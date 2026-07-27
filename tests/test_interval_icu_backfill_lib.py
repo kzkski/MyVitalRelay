@@ -20,7 +20,7 @@ def test_round1() -> None:
     assert round1(15.04) == 15.0
 
 
-def test_pick_daily_metrics_independent_latest() -> None:
+def test_pick_daily_metrics_independent_earliest() -> None:
     metrics = pick_daily_metrics(
         [
             {"measured_at": "2026-07-27T01:00:00Z", "weight_kg": 70.0, "body_fat_pct": None},
@@ -28,7 +28,7 @@ def test_pick_daily_metrics_independent_latest() -> None:
             {"measured_at": "2026-07-27T03:00:00Z", "weight_kg": 70.55, "body_fat_pct": 14.0},
         ]
     )
-    assert metrics == {"weight": 70.6, "bodyFat": 15.4}
+    assert metrics == {"weight": 70.0, "bodyFat": 14.0}
 
 
 def test_pick_daily_metrics_empty() -> None:

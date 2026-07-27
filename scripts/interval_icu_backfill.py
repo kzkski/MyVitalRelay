@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Intervals.icu wellness 全履歴バックフィル（初回ワンショット用）。
 
-body_composition_sample を走査し、日次の最新 weight / bodyFat を wellness-bulk で PUSH。
+body_composition_sample を走査し、日次の最初の weight / bodyFat を wellness-bulk で PUSH。
 キューは経由しない。GitHub Actions「Interval.icu Backfill」から実行する想定。
 
 使い方:
