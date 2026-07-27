@@ -1,0 +1,33 @@
+# Intervals.icu wellness 全履歴バックフィル（初回ワンショット）
+#
+# Secrets:
+#   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+#   INTERVAL_ICU_SYNC_USERS  ([{"supabase_user_id":"...","api_key":"..."}])
+#   INTERVAL_ICU_BACKFILL_USER_ID（複数ユーザー時のみ必須。単一なら省略可）
+
+name: Interval.icu Backfill
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install supabase requests
+
+      - name: Push wellness history
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          INTERVAL_ICU_SYNC_USERS: ${{ secrets.INTERVAL_ICU_SYNC_USERS }}
+          INTERVAL_ICU_BACKFILL_USER_ID: ${{ secrets.INTERVAL_ICU_BACKFILL_USER_ID }}
+        run: PYTHONPATH=scripts python scripts/interval_icu_backfill.py

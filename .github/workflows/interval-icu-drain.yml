@@ -1,0 +1,26 @@
+# Intervals.icu sync キューの手動 drain
+# Edge Function を sweep モードで叩き、pending を最大 20 件処理する。
+#
+# Secrets:
+#   SUPABASE_URL
+#   INTERVAL_ICU_WEBHOOK_SECRET
+
+name: Interval.icu Drain
+
+on:
+  workflow_dispatch:
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sweep pending interval_icu_sync_request
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          INTERVAL_ICU_WEBHOOK_SECRET: ${{ secrets.INTERVAL_ICU_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST "${SUPABASE_URL}/functions/v1/interval-icu-sync" \
+            -H "Content-Type: application/json" \
+            -H "X-Interval-Icu-Webhook-Secret: ${INTERVAL_ICU_WEBHOOK_SECRET}" \
+            -d '{"sweep":true}'

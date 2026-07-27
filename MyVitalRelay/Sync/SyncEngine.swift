@@ -152,6 +152,10 @@ final class SyncEngine {
             try await client.from("body_composition_sample")
                 .upsert(records, onConflict: "healthkit_uuid")
                 .execute()
+            await IntervalIcuSyncRequestEnqueuer.enqueueIfNeeded(
+                client: client,
+                bodyRecords: records
+            )
         }
         if let anchor = result.bodyMassAnchor {
             BodyCompositionAnchorStore.saveBodyMass(anchor)
