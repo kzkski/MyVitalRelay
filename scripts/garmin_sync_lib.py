@@ -195,3 +195,15 @@ def resolve_request_status(
             return "complete", None
 
     return "complete", None
+
+
+def link_then_apply_calories(sb: Any, user_id: str) -> tuple[Any, Any]:
+    """training_log リンク後に Garmin 合計カロリーを反映する（Issue #28）。
+
+    呼び出し順をテストで固定するため薄いヘルパーに切り出す。
+    """
+    link_result = sb.rpc("link_garmin_activity_training_log", {"p_user_id": user_id}).execute()
+    apply_result = sb.rpc(
+        "apply_garmin_calories_to_training_log", {"p_user_id": user_id}
+    ).execute()
+    return link_result, apply_result

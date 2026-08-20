@@ -27,11 +27,15 @@ enum WorkoutMapper {
             guard let km = distanceKm, durationMin > 0 else { return nil }
             return km / (durationMin / 60.0)
         }()
+        let source = dataSource(sourceName: snapshot.sourceName, bundleId: snapshot.sourceBundleId)
+        // garmin 行の calories_burned は Garmin sync が summaryDTO.calories で埋める（Issue #28）。
+        // HK 値を送ると上書きするため nil（キー省略）。バルク時は SyncEngine でバッチ分割すること。
+        let caloriesBurned: Double? = source == "garmin" ? nil : snapshot.activeEnergyKcal
 
         return TrainingLogRecord(
             userId: userId,
             date: dateString(snapshot.startDate),
-            dataSource: dataSource(sourceName: snapshot.sourceName, bundleId: snapshot.sourceBundleId),
+            dataSource: source,
             healthkitUuid: snapshot.uuid,
             discipline: discipline(for: snapshot.activityType),
             workoutType: snapshot.activityType.displayName,
@@ -40,7 +44,7 @@ enum WorkoutMapper {
             durationMin: durationMin,
             distanceKm: distanceKm,
             avgSpeedKmh: avgSpeedKmh,
-            caloriesBurned: snapshot.activeEnergyKcal,
+            caloriesBurned: caloriesBurned,
             avgHr: snapshot.avgHeartRate,
             maxHr: snapshot.maxHeartRate,
             hrZoneMinutes: snapshot.hrZoneMinutes,
@@ -54,6 +58,25 @@ enum WorkoutMapper {
             ),
             updatedAt: timestampString(now)
         )
+    }
+
+    /// PostgREST バルク upsert 用: calories キー有無が均一な 2 バッチに分割する（Issue #28 案 A'）。
+    /// 順序は呼び出し側で include → omit に固定する。
+    static func partitionTrainingLogRecordsForCaloriesUpsert(
+        _ records: [TrainingLogRecord]
+    ) -> (omitCalories: [TrainingLogRecord], includeCalories: [TrainingLogRecord]) {
+        var omit: [TrainingLogRecord] = []
+        var include: [TrainingLogRecord] = []
+        omit.reserveCapacity(records.count)
+        include.reserveCapacity(records.count)
+        for record in records {
+            if record.dataSource == "garmin" {
+                omit.append(record)
+            } else {
+                include.append(record)
+            }
+        }
+        return (omit, include)
     }
 
     /// indoor/outdoor判定は行わず、ソースアプリのみで判定する（引き継ぎ資料2.2節）。

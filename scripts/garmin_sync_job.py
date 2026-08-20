@@ -32,6 +32,7 @@ from garmin_sync_lib import (
     inline_or_storage_plan,
     iter_dates,
     json_safe,
+    link_then_apply_calories,
     maybe_single_row,
     parse_garmin_start_time,
     resolve_request_status,
@@ -338,7 +339,7 @@ def process_request(sb: Any, req: dict[str, Any], users_by_id: dict[str, dict[st
 
     if scope in ("activities", "all"):
         act_counts = sync_activities_for_range(sb, api, user_id, date_from, date_to, req["id"])
-        sb.rpc("link_garmin_activity_training_log", {"p_user_id": user_id}).execute()
+        link_then_apply_calories(sb, user_id)
 
     if scope in ("daily", "all"):
         day_counts = sync_daily_for_range(sb, api, user_id, date_from, date_to, req["id"])

@@ -37,9 +37,12 @@
    - `daily`: 期間内の各日（日次 API 全件）
    - `all`: 両方
 5. `link_garmin_activity_training_log(user_id)`（activities 含む場合）
-6. `progress` JSON を記録し、`complete` / `partial` / `failed` に更新
+6. `apply_garmin_calories_to_training_log(user_id)`（activities 含む場合。Issue #28。リンク済み行の `calories_burned` を Garmin 合計へ。冪等）
+7. `progress` JSON を記録し、`complete` / `partial` / `failed` に更新
 
 **`complete` でも activity 0 件の場合は `partial` になる**（空振り検知）。
+
+カロリー適用に失敗して `calories_burned` が空のままのときは、同一範囲の sync request を再キューすれば apply が再実行される（冪等）。
 
 ### GHA concurrency
 
