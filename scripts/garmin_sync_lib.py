@@ -195,3 +195,50 @@ def resolve_request_status(
             return "complete", None
 
     return "complete", None
+
+
+def storage_date_for_activity_day(activity_day: str) -> str:
+    """活動日 D（YYYY-MM-DD）→ 格納日 D+1。daily_activity_summary / daily_log 規約。"""
+    d = date.fromisoformat(activity_day)
+    return (d + timedelta(days=1)).isoformat()
+
+
+def extract_garmin_daily_calorie_fields(
+    api_responses: dict[str, Any] | None,
+) -> tuple[float | None, float | None, float | None]:
+    """get_stats から (active, bmr, total) を取り出す。欠落時は None。"""
+    if not isinstance(api_responses, dict):
+        return None, None, None
+    stats = api_responses.get("get_stats")
+    if not isinstance(stats, dict) or "_error" in stats:
+        return None, None, None
+
+    def _num(key: str) -> float | None:
+        raw = stats.get(key)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    return (
+        _num("activeKilocalories"),
+        _num("bmrKilocalories"),
+        _num("totalKilocalories"),
+    )
+
+
+def apply_garmin_daily_calories(
+    sb: Any,
+    user_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> Any:
+    """archive の get_stats を daily_activity_summary へ反映（Issue #29）。"""
+    params: dict[str, Any] = {"p_user_id": user_id}
+    if date_from is not None:
+        params["p_date_from"] = date_from
+    if date_to is not None:
+        params["p_date_to"] = date_to
+    return sb.rpc("apply_garmin_daily_calories_to_summary", params).execute()

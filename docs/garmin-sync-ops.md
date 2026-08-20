@@ -37,9 +37,12 @@
    - `daily`: 期間内の各日（日次 API 全件）
    - `all`: 両方
 5. `link_garmin_activity_training_log(user_id)`（activities 含む場合）
-6. `progress` JSON を記録し、`complete` / `partial` / `failed` に更新
+6. `apply_garmin_daily_calories_to_summary(user_id, date_from, date_to)`（daily 含む場合。Issue #29。`get_stats` → `daily_activity_summary`。活動日 D → 格納日 D+1。冪等。skip 済み日も反映）
+7. `progress` JSON を記録し、`complete` / `partial` / `failed` に更新
 
 **`complete` でも activity 0 件の場合は `partial` になる**（空振り検知）。
+
+**日次カロリー（Issue #29）:** 正は Garmin `get_stats`（`totalKilocalories` / `activeKilocalories` / `bmrKilocalories`）。iOS の HealthKit 日次カロリー同期は行わない（上書き防止）。総消費は `active + basal`、または `garmin_daily_summary.total_calories_kcal`（活動日キー）。`daily_log.calories_burned` は総消費として使わない。
 
 ### GHA concurrency
 

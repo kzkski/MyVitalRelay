@@ -203,6 +203,7 @@ GET /rest/v1/garmin_activity_claude?garmin_activity_id=eq.{id}&select=activity_n
 
 | 指標 | `garmin_daily_summary` 列 | 用途 |
 |---|---|---|
+| **総消費カロリー** | `total_calories_kcal`（＋ `active_calories_kcal` / `bmr_calories_kcal`） | Connect と同じ日次合計（活動日キー。Issue #29） |
 | HRV（前夜平均・週平均・ステータス） | `hrv_last_night_avg`, `hrv_weekly_avg`, `hrv_status` | ベースライン比較、オーバー/アンダー傾向 |
 | Body Battery 増減 | `bb_charged`, `bb_drained`, `bb_net` | 当日のエネルギー回復・消費バランス |
 | 睡眠 | `sleep_score`, `sleep_qualifier`, `sleep_minutes` | 昨夜の睡眠質・回復 |
@@ -226,8 +227,16 @@ Content-Type: application/json
 取得後（**FR255 では `training_readiness` は見なくてよい**）:
 
 ```http
-GET /rest/v1/garmin_daily_summary?date=gte.2026-07-07&date=lte.2026-07-12&select=date,hrv_last_night_avg,hrv_weekly_avg,hrv_status,bb_net,sleep_score,sleep_qualifier,sleep_minutes,training_phrase,acwr,vo2max&order=date.desc
+GET /rest/v1/garmin_daily_summary?date=gte.2026-07-07&date=lte.2026-07-12&select=date,total_calories_kcal,active_calories_kcal,bmr_calories_kcal,hrv_last_night_avg,hrv_weekly_avg,hrv_status,bb_net,sleep_score,sleep_qualifier,sleep_minutes,training_phrase,acwr,vo2max&order=date.desc
 ```
+
+**日次カロリー（Issue #29）:**
+
+| 見方 | 正 |
+|---|---|
+| Connect と同じ「その日の総消費」 | `garmin_daily_summary.total_calories_kcal`（**活動日**キー） |
+| `daily_activity_summary` | Garmin `active` / `bmr` を格納。日付は **活動日 D → 格納日 D+1**。総消費 = `active_calories_kcal + basal_calories_kcal` |
+| `daily_log.calories_burned` | **総消費として使わない**（歴史的にアクティブ相当のまま残っている可能性） |
 
 **まだ sync していない日は 0 件で正常。** 上記 POST → 数十秒待ち → 再 SELECT。
 
@@ -289,7 +298,7 @@ HealthKit 経由の自動投入は **直近約 14 日** の Garmin ワークア�
 
 ### `garmin_daily_summary` — 日次一覧 View（**最初に見る**）
 
-`hrv_last_night_avg`, `hrv_weekly_avg`, `hrv_status`, `bb_net`, `sleep_score`, `training_phrase`, `acwr`, `vo2max` 等のスカラー値のみ（数百バイト/行）。
+`total_calories_kcal`, `active_calories_kcal`, `bmr_calories_kcal`, `hrv_last_night_avg`, `hrv_weekly_avg`, `hrv_status`, `bb_net`, `sleep_score`, `training_phrase`, `acwr`, `vo2max` 等のスカラー値のみ（数百バイト/行）。日付は **活動日**（`daily_activity_summary` の格納日 D+1 とは異なる）。
 
 ### `garmin_daily_claude` — 日次詳細 View（**深掘り時**）
 

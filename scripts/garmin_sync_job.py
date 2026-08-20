@@ -28,6 +28,7 @@ except ImportError:
 from garmin_fetchers import ACTIVITY_FETCHER_NAMES, DAILY_FETCHER_NAMES, call_daily_fetcher
 from garmin_sync_lib import (
     JSON_INLINE_MAX_DEFAULT,
+    apply_garmin_daily_calories,
     fit_to_json,
     inline_or_storage_plan,
     iter_dates,
@@ -342,6 +343,8 @@ def process_request(sb: Any, req: dict[str, Any], users_by_id: dict[str, dict[st
 
     if scope in ("daily", "all"):
         day_counts = sync_daily_for_range(sb, api, user_id, date_from, date_to, req["id"])
+        # skip 済み日も含め archive → daily_activity_summary を冪等反映（Issue #29）
+        apply_garmin_daily_calories(sb, user_id, date_from, date_to)
 
     status, error = resolve_request_status(
         scope=scope,

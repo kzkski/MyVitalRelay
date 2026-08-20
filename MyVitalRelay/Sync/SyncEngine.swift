@@ -57,7 +57,9 @@ final class SyncEngine {
             lastSyncedWorkoutCount = try await syncWorkouts(userId: userId)
             lastSyncedBodyCount = try await syncBodyComposition(userId: userId)
             lastSyncedSleepCount = try await syncSleepSegments(userId: userId)
-            lastSyncedDailyActivityCount = try await syncDailyActivitySummary(userId: userId)
+            // Issue #29: 日次カロリーの正は Garmin get_stats（ジョブが daily_activity_summary に反映）。
+            // HK active/basal で上書きしない。
+            lastSyncedDailyActivityCount = 0
             lastSyncAt = .now
             UserDefaults.standard.set(lastSyncAt, forKey: "lastSyncAt")
             lastError = nil
