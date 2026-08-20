@@ -158,6 +158,69 @@ final class WorkoutMapperTests: XCTestCase {
         XCTAssertFalse(json.contains("\"id\""))
     }
 
+    /// Issue #28: garmin 行は calories_burned キーを送らない（Garmin sync が合計を埋める）。
+    func testGarminOmitsCaloriesBurnedFromEncode() throws {
+        let record = WorkoutMapper.record(from: makeSnapshot(activeEnergyKcal: 600), userId: userId)
+        XCTAssertEqual(record.dataSource, "garmin")
+        XCTAssertNil(record.caloriesBurned)
+
+        let data = try JSONEncoder().encode(record)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertFalse(json.contains("\"calories_burned\""))
+    }
+
+    func testNonGarminIncludesCaloriesBurnedInEncode() throws {
+        let snapshot = makeSnapshot(
+            sourceName: "Life Fitness",
+            sourceBundleId: "com.lifefitness.halo",
+            activeEnergyKcal: 450
+        )
+        let record = WorkoutMapper.record(from: snapshot, userId: userId)
+        XCTAssertEqual(record.dataSource, "life_fitness")
+        XCTAssertEqual(record.caloriesBurned, 450)
+
+        let data = try JSONEncoder().encode(record)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(json.contains("\"calories_burned\""))
+    }
+
+    func testPartitionTrainingLogRecordsForCaloriesUpsert() throws {
+        let garmin = WorkoutMapper.record(from: makeSnapshot(), userId: userId)
+        let lifeFitness = WorkoutMapper.record(
+            from: makeSnapshot(
+                sourceName: "Life Fitness",
+                sourceBundleId: "com.lifefitness.halo",
+                activeEnergyKcal: 300
+            ),
+            userId: userId
+        )
+        let manual = WorkoutMapper.record(
+            from: makeSnapshot(
+                sourceName: "Mystery Gym",
+                sourceBundleId: "com.example.gym",
+                activeEnergyKcal: 200
+            ),
+            userId: userId
+        )
+
+        let partitioned = WorkoutMapper.partitionTrainingLogRecordsForCaloriesUpsert([
+            garmin, lifeFitness, manual,
+        ])
+        XCTAssertEqual(partitioned.omitCalories.map(\.dataSource), ["garmin"])
+        XCTAssertEqual(
+            Set(partitioned.includeCalories.map(\.dataSource)),
+            Set(["life_fitness", "manual"])
+        )
+
+        let omitData = try JSONEncoder().encode(partitioned.omitCalories)
+        let omitJSON = try XCTUnwrap(String(data: omitData, encoding: .utf8))
+        XCTAssertFalse(omitJSON.contains("\"calories_burned\""))
+
+        let includeData = try JSONEncoder().encode(partitioned.includeCalories)
+        let includeJSON = try XCTUnwrap(String(data: includeData, encoding: .utf8))
+        XCTAssertTrue(includeJSON.contains("\"calories_burned\""))
+    }
+
     func testLogicalKeyIsStableAcrossDifferentUUIDs() {
         let base = makeSnapshot(uuid: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!)
         let other = makeSnapshot(uuid: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!)

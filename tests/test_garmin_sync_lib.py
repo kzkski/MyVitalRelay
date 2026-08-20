@@ -18,6 +18,7 @@ from garmin_sync_lib import (  # noqa: E402
     is_postgres_unique_violation,
     iter_dates,
     json_safe,
+    link_then_apply_calories,
     maybe_single_row,
     parse_garmin_start_time,
     resolve_request_status,
@@ -154,10 +155,10 @@ def test_extract_garmin_daily_calorie_fields() -> None:
 
 
 class _FakeRPC:
-    def __init__(self, name: str, calls: list[tuple[str, dict]]):
+    def __init__(self, name: str, calls: list[tuple[str, dict]], params: dict):
         self._name = name
         self._calls = calls
-        self._params: dict = {}
+        self._params = params
 
     def execute(self):
         self._calls.append((self._name, self._params))
@@ -169,9 +170,16 @@ class _FakeSB:
         self.calls: list[tuple[str, dict]] = []
 
     def rpc(self, name: str, params: dict):
-        rpc = _FakeRPC(name, self.calls)
-        rpc._params = params
-        return rpc
+        return _FakeRPC(name, self.calls, params)
+
+
+def test_link_then_apply_calories_order() -> None:
+    sb = _FakeSB()
+    link_then_apply_calories(sb, "user-1")
+    assert [name for name, _ in sb.calls] == [
+        "link_garmin_activity_training_log",
+        "apply_garmin_calories_to_training_log",
+    ]
 
 
 def test_apply_garmin_daily_calories_rpc_params() -> None:
@@ -205,5 +213,6 @@ if __name__ == "__main__":
     test_resolve_request_status_all_skipped()
     test_storage_date_for_activity_day()
     test_extract_garmin_daily_calorie_fields()
+    test_link_then_apply_calories_order()
     test_apply_garmin_daily_calories_rpc_params()
     print("all tests passed")

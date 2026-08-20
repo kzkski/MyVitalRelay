@@ -59,6 +59,10 @@ FIT バイナリ（Storage）は Claude から読めない。`fit_parsed` / `api
 - Claude は **Supabase PostgREST + RLS** でアクセスする（refresh_token → access_token → Bearer）。
 - RLS により **ログインユーザー本人の `user_id` の行のみ** 読める。
 - ワークアウト概要の正: `training_log`（MyVitalRelay / HealthKit リレー）
+  - **`calories_burned` の意味は `data_source` で分岐（Issue #28）:**
+    - `garmin`: Garmin `summaryDTO.calories`（セッション合計 kcal・BMR 込み）。Garmin sync の link 後に反映
+    - `life_fitness` / `manual`: HealthKit `activeEnergyBurned`（アクティブのみ）
+  - アクティブ相当が欲しければ archive の `(summaryDTO.calories − summaryDTO.bmrCalories)`
 - Garmin 詳細（FIT 解析・API 全量）の正: `garmin_activity_archive` → View 経由で読む
 
 ---
