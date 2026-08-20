@@ -9,7 +9,7 @@ HealthKit（読み取り専用）→ Supabase（書き込み専用）の一方�
 | ワークアウト | `training_log` |
 | 体重・体脂肪 | `body_composition_sample` |
 | 睡眠セグメント | `sleep_segment` |
-| 日次カロリー | `daily_activity_summary` |
+| 日次カロリー | `daily_activity_summary`（**正は Garmin `get_stats`**。活動日 D → 格納日 D+1。総消費 = active + basal。Issue #29） |
 
 体組成（体重・体脂肪）は Intervals.icu wellness へも一方向 PUSH する（Issue #24、運用は `docs/interval-icu-sync-ops.md`）。
 

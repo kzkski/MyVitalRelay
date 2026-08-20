@@ -10,8 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from datetime import time
 
 from garmin_sync_lib import (  # noqa: E402
+    apply_garmin_daily_calories,
     chunk_date_range,
     enqueue_date_range,
+    extract_garmin_daily_calorie_fields,
     inline_or_storage_plan,
     is_postgres_unique_violation,
     iter_dates,
@@ -21,6 +23,7 @@ from garmin_sync_lib import (  # noqa: E402
     parse_garmin_start_time,
     resolve_request_status,
     response_data,
+    storage_date_for_activity_day,
 )
 
 
@@ -127,30 +130,70 @@ def test_resolve_request_status_all_skipped() -> None:
     assert err is None
 
 
+def test_storage_date_for_activity_day() -> None:
+    assert storage_date_for_activity_day("2026-08-16") == "2026-08-17"
+
+
+def test_extract_garmin_daily_calorie_fields() -> None:
+    active, bmr, total = extract_garmin_daily_calorie_fields(
+        {
+            "get_stats": {
+                "activeKilocalories": 1156,
+                "bmrKilocalories": 1787,
+                "totalKilocalories": 2943,
+            }
+        }
+    )
+    assert active == 1156.0
+    assert bmr == 1787.0
+    assert total == 2943.0
+    assert extract_garmin_daily_calorie_fields({"get_stats": {"_error": "x"}}) == (
+        None,
+        None,
+        None,
+    )
+
+
 class _FakeRPC:
-    def __init__(self, name: str, calls: list[str]):
+    def __init__(self, name: str, calls: list[tuple[str, dict]], params: dict):
         self._name = name
         self._calls = calls
+        self._params = params
 
     def execute(self):
-        self._calls.append(self._name)
+        self._calls.append((self._name, self._params))
         return _FakeResponse(1)
 
 
 class _FakeSB:
     def __init__(self) -> None:
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, dict]] = []
 
-    def rpc(self, name: str, _params: dict):
-        return _FakeRPC(name, self.calls)
+    def rpc(self, name: str, params: dict):
+        return _FakeRPC(name, self.calls, params)
 
 
 def test_link_then_apply_calories_order() -> None:
     sb = _FakeSB()
     link_then_apply_calories(sb, "user-1")
-    assert sb.calls == [
+    assert [name for name, _ in sb.calls] == [
         "link_garmin_activity_training_log",
         "apply_garmin_calories_to_training_log",
+    ]
+
+
+def test_apply_garmin_daily_calories_rpc_params() -> None:
+    sb = _FakeSB()
+    apply_garmin_daily_calories(sb, "user-1", "2026-08-01", "2026-08-10")
+    assert sb.calls == [
+        (
+            "apply_garmin_daily_calories_to_summary",
+            {
+                "p_user_id": "user-1",
+                "p_date_from": "2026-08-01",
+                "p_date_to": "2026-08-10",
+            },
+        )
     ]
 
 
@@ -168,5 +211,8 @@ if __name__ == "__main__":
     test_chunk_date_range()
     test_resolve_request_status_empty_activities()
     test_resolve_request_status_all_skipped()
+    test_storage_date_for_activity_day()
+    test_extract_garmin_daily_calorie_fields()
     test_link_then_apply_calories_order()
+    test_apply_garmin_daily_calories_rpc_params()
     print("all tests passed")
