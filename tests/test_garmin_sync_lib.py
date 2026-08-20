@@ -16,6 +16,7 @@ from garmin_sync_lib import (  # noqa: E402
     is_postgres_unique_violation,
     iter_dates,
     json_safe,
+    link_then_apply_calories,
     maybe_single_row,
     parse_garmin_start_time,
     resolve_request_status,
@@ -126,6 +127,33 @@ def test_resolve_request_status_all_skipped() -> None:
     assert err is None
 
 
+class _FakeRPC:
+    def __init__(self, name: str, calls: list[str]):
+        self._name = name
+        self._calls = calls
+
+    def execute(self):
+        self._calls.append(self._name)
+        return _FakeResponse(1)
+
+
+class _FakeSB:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def rpc(self, name: str, _params: dict):
+        return _FakeRPC(name, self.calls)
+
+
+def test_link_then_apply_calories_order() -> None:
+    sb = _FakeSB()
+    link_then_apply_calories(sb, "user-1")
+    assert sb.calls == [
+        "link_garmin_activity_training_log",
+        "apply_garmin_calories_to_training_log",
+    ]
+
+
 if __name__ == "__main__":
     test_parse_garmin_start_time_prefers_gmt()
     test_parse_garmin_start_time_local_as_jst()
@@ -140,4 +168,5 @@ if __name__ == "__main__":
     test_chunk_date_range()
     test_resolve_request_status_empty_activities()
     test_resolve_request_status_all_skipped()
+    test_link_then_apply_calories_order()
     print("all tests passed")

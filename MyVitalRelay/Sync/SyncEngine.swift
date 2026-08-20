@@ -103,14 +103,24 @@ final class SyncEngine {
             WorkoutMapper.record(from: $0, userId: userId)
         }
         if !records.isEmpty {
-            try await client.from("training_log")
-                .upsert(records, onConflict: "user_id,start_time,end_time,workout_type")
-                .execute()
+            // Issue #28: garmin は calories_burned キー省略、非 garmin はキーあり。
+            // 混在一括だと PostgREST バルクの列集合が崩れるためバッチ分割（先に非 garmin）。
+            let partitioned = WorkoutMapper.partitionTrainingLogRecordsForCaloriesUpsert(records)
+            let conflict = "user_id,start_time,end_time,workout_type"
+            if !partitioned.includeCalories.isEmpty {
+                try await client.from("training_log")
+                    .upsert(partitioned.includeCalories, onConflict: conflict)
+                    .execute()
+            }
+            if !partitioned.omitCalories.isEmpty {
+                try await client.from("training_log")
+                    .upsert(partitioned.omitCalories, onConflict: conflict)
+                    .execute()
+            }
 
-            let garminRecords = records.filter { $0.dataSource == "garmin" }
             await GarminSyncRequestEnqueuer.enqueueActivitiesIfNeeded(
                 client: client,
-                garminRecords: garminRecords
+                garminRecords: partitioned.omitCalories
             )
         }
 
