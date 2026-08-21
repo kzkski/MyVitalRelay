@@ -296,6 +296,8 @@ HealthKit 経由の自動投入は **直近約 14 日** の Garmin ワークア�
 
 `training_log` と JOIN 済み。`cadence_spm`, `avg_power_w`, `training_log_id`, `garmin_activity_id` 等。
 
+心拍 avg/max は **`avg_hr_garmin` / `max_hr_garmin`**（`summary->summaryDTO` の `averageHR` / `maxHR`）。training_log 由来の `avg_hr` / `max_hr` は削除済み（Issue #27）。
+
 ### `garmin_activity_claude` — 詳細 View（**深掘り時**）
 
 `summary`, `fit_parsed`, `api_responses`（大型 JSONB）を含む。

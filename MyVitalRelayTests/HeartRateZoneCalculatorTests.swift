@@ -42,9 +42,7 @@ final class HeartRateZoneCalculatorTests: XCTestCase {
             samples: samples,
             workoutStart: workoutStart,
             workoutEnd: workoutEnd,
-            boundaries: boundaries,
-            statisticsAvg: nil,
-            statisticsMax: nil
+            boundaries: boundaries
         )
 
         XCTAssertEqual(result.zoneMinutes?["zone2"] ?? 0, 60.0, accuracy: 0.1)
@@ -60,9 +58,7 @@ final class HeartRateZoneCalculatorTests: XCTestCase {
             samples: samples,
             workoutStart: workoutStart,
             workoutEnd: workoutEnd,
-            boundaries: boundaries,
-            statisticsAvg: nil,
-            statisticsMax: nil
+            boundaries: boundaries
         )
 
         XCTAssertEqual(Set(result.zoneMinutes?.keys.map { $0 } ?? []), Set(HRZoneKey.all))
@@ -78,9 +74,7 @@ final class HeartRateZoneCalculatorTests: XCTestCase {
             samples: samples,
             workoutStart: workoutStart,
             workoutEnd: workoutEnd,
-            boundaries: boundaries,
-            statisticsAvg: nil,
-            statisticsMax: nil
+            boundaries: boundaries
         )
 
         XCTAssertEqual(result.zoneMinutes?["zone2"] ?? 0, 30.0, accuracy: 0.1)
@@ -101,9 +95,7 @@ final class HeartRateZoneCalculatorTests: XCTestCase {
             samples: samples,
             workoutStart: workoutStart,
             workoutEnd: workoutEnd,
-            boundaries: boundaries,
-            statisticsAvg: nil,
-            statisticsMax: nil
+            boundaries: boundaries
         )
 
         XCTAssertEqual(result.zoneMinutes?["zone2"] ?? 0, 60.0, accuracy: 0.1)
@@ -115,51 +107,11 @@ final class HeartRateZoneCalculatorTests: XCTestCase {
             samples: [],
             workoutStart: workoutStart,
             workoutEnd: workoutEnd,
-            boundaries: boundaries,
-            statisticsAvg: nil,
-            statisticsMax: nil
+            boundaries: boundaries
         )
 
-        XCTAssertNil(result.avgBpm)
-        XCTAssertNil(result.maxBpm)
         XCTAssertNil(result.zoneMinutes)
         XCTAssertNil(result.zoneSource)
-    }
-
-    func testAggregate_statisticsPriority() {
-        let samples = [sample(offset: 0, bpm: 130)]
-
-        let result = HeartRateZoneCalculator.aggregate(
-            samples: samples,
-            workoutStart: workoutStart,
-            workoutEnd: workoutEnd,
-            boundaries: boundaries,
-            statisticsAvg: 145,
-            statisticsMax: 165
-        )
-
-        XCTAssertEqual(result.avgBpm, 145)
-        XCTAssertEqual(result.maxBpm, 165)
-        XCTAssertNotNil(result.zoneMinutes)
-    }
-
-    func testAggregate_statisticsNil_fallbackToSamples() {
-        let samples = [
-            sample(offset: 0, bpm: 100),
-            sample(offset: 1_800, bpm: 140)
-        ]
-
-        let result = HeartRateZoneCalculator.aggregate(
-            samples: samples,
-            workoutStart: workoutStart,
-            workoutEnd: workoutEnd,
-            boundaries: boundaries,
-            statisticsAvg: nil,
-            statisticsMax: nil
-        )
-
-        XCTAssertEqual(result.avgBpm ?? 0, 120, accuracy: 0.1)
-        XCTAssertEqual(result.maxBpm, 140)
     }
 
     func testBoundaries_fromAge() {

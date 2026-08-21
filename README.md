@@ -76,8 +76,8 @@ Mac + 実機での手順: **`docs/garmin-phase1-mac-checklist.md`**
 
 ### ワークアウト（フェーズ2）
 1. サインイン → HealthKit一括認可が通る
-2. Life Fitness由来ワークアウトが同期される（`data_source='life_fitness'`、心拍NULL、距離・カロリーあり）
-3. Garmin由来ワークアウトが同期される（`data_source='garmin'`、心拍・獲得標高あり）
+2. Life Fitness由来ワークアウトが同期される（`data_source='life_fitness'`、距離・カロリーあり。心拍ゾーンは基本なし）
+3. Garmin由来ワークアウトが同期される（`data_source='garmin'`、`hr_zone_minutes`・獲得標高あり。avg/max は Garmin archive VIEW）
 4. 「今すぐ同期」を何度押しても重複レコードが増えない
    （論理キー `(start_time, end_time, workout_type)` による upsert 冪等性。
    Garmin 等で healthkit_uuid が差し替わっても1行に収まり、
