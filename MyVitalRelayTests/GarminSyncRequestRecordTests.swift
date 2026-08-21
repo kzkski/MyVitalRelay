@@ -62,8 +62,6 @@ final class GarminSyncRequestRecordTests: XCTestCase {
             distanceKm: 10,
             avgSpeedKmh: 10,
             caloriesBurned: 500,
-            avgHr: 140,
-            maxHr: 160,
             hrZoneMinutes: nil,
             elevationGainM: 50,
             strokeCount: nil,

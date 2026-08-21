@@ -30,8 +30,6 @@ struct TrainingLogRecord: Codable, Identifiable, Hashable {
     var distanceKm: Double?
     var avgSpeedKmh: Double?
     var caloriesBurned: Double?
-    var avgHr: Double?
-    var maxHr: Double?
     var hrZoneMinutes: HRZoneMinutes?
     var elevationGainM: Double?
     var strokeCount: Double?
@@ -53,8 +51,6 @@ struct TrainingLogRecord: Codable, Identifiable, Hashable {
         case distanceKm = "distance_km"
         case avgSpeedKmh = "avg_speed_kmh"
         case caloriesBurned = "calories_burned"
-        case avgHr = "avg_hr"
-        case maxHr = "max_hr"
         case hrZoneMinutes = "hr_zone_minutes"
         case elevationGainM = "elevation_gain_m"
         case strokeCount = "stroke_count"

@@ -93,7 +93,7 @@ MyVitalRelay/
 | `distance_km` | distanceWalkingRunning / distanceCycling / distanceSwimming の統計値（種目により選択、合算値をそのまま格納） |
 | `avg_speed_kmh` | distance_km ÷ duration から算出（distanceがNULLならNULL） |
 | `calories_burned` | **Garmin:** sync 後に `summaryDTO.calories`（セッション合計・BMR 込み）。iOS は garmin 行では送らない。**life_fitness / manual:** HK `activeEnergyBurned` |
-| `avg_hr` / `max_hr` | heartRate 統計値（Life Fitness由来は自然にNULL） |
+| `avg_hr` / `max_hr` | **削除済み（Issue #27）**。心拍 avg/max は `garmin_activity_claude_summary.avg_hr_garmin` / `max_hr_garmin`（`summaryDTO`）を参照 |
 | `elevation_gain_m` | `HKMetadataKeyElevationAscended`（なければNULL） |
 | `stroke_count` | swimmingStrokeCount 統計値（水泳のみ） |
 | `cadence` / `power_watts` / `stroke_style` | **MVPでは常にNULL**（cadenceはHKWorkoutから直接取れないため、将来stepCountサンプル集計で対応する余地をREADMEに記録） |

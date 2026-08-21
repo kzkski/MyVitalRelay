@@ -86,16 +86,12 @@ final class SyncEngine {
             do {
                 let enrichment = try await hrFetcher.enrich(
                     workout: workout,
-                    statisticsAvg: snapshot.avgHeartRate,
-                    statisticsMax: snapshot.maxHeartRate,
                     boundaries: boundaries
                 )
-                snapshot.avgHeartRate = enrichment.avgBpm
-                snapshot.maxHeartRate = enrichment.maxBpm
                 snapshot.hrZoneMinutes = enrichment.zoneMinutes
                 snapshot.hrZoneSource = enrichment.zoneSource
             } catch {
-                // 個別ワークアウトのHR取得失敗時はstatisticsベースのまま同期を続行する。
+                // 個別ワークアウトのゾーン算出失敗時は他メトリクスのみで同期を続行する。
             }
 
             snapshots.append(snapshot)

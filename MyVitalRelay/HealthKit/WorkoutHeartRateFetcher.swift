@@ -62,8 +62,6 @@ struct WorkoutHeartRateFetcher {
 
     func enrich(
         workout: HKWorkout,
-        statisticsAvg: Double?,
-        statisticsMax: Double?,
         boundaries: HeartRateZoneBoundaries
     ) async throws -> HeartRateAggregation {
         let samples = try await fetchSamples(for: workout)
@@ -71,9 +69,7 @@ struct WorkoutHeartRateFetcher {
             samples: samples,
             workoutStart: workout.startDate,
             workoutEnd: workout.endDate,
-            boundaries: boundaries,
-            statisticsAvg: statisticsAvg,
-            statisticsMax: statisticsMax
+            boundaries: boundaries
         )
     }
 }

@@ -45,8 +45,6 @@ enum WorkoutMapper {
             distanceKm: distanceKm,
             avgSpeedKmh: avgSpeedKmh,
             caloriesBurned: caloriesBurned,
-            avgHr: snapshot.avgHeartRate,
-            maxHr: snapshot.maxHeartRate,
             hrZoneMinutes: snapshot.hrZoneMinutes,
             elevationGainM: snapshot.elevationAscendedMeters,
             strokeCount: snapshot.strokeCount,

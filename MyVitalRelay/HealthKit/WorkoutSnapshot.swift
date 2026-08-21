@@ -12,8 +12,6 @@ struct WorkoutSnapshot {
     var sourceBundleId: String
     var distanceMeters: Double?
     var activeEnergyKcal: Double?
-    var avgHeartRate: Double?
-    var maxHeartRate: Double?
     var hrZoneMinutes: HRZoneMinutes?
     var hrZoneSource: HeartRateZoneBoundaries.Source?
     var elevationAscendedMeters: Double?
@@ -27,9 +25,6 @@ extension WorkoutSnapshot {
             workout.statistics(for: HKQuantityType(id))?.sumQuantity()?.doubleValue(for: unit)
         }
 
-        let hrUnit = HKUnit.count().unitDivided(by: .minute())
-        let hrStats = workout.statistics(for: HKQuantityType(.heartRate))
-
         self.init(
             uuid: workout.uuid,
             activityType: workout.workoutActivityType,
@@ -42,8 +37,8 @@ extension WorkoutSnapshot {
                 ?? sum(.distanceCycling, unit: .meter())
                 ?? sum(.distanceSwimming, unit: .meter()),
             activeEnergyKcal: sum(.activeEnergyBurned, unit: .kilocalorie()),
-            avgHeartRate: hrStats?.averageQuantity()?.doubleValue(for: hrUnit),
-            maxHeartRate: hrStats?.maximumQuantity()?.doubleValue(for: hrUnit),
+            hrZoneMinutes: nil,
+            hrZoneSource: nil,
             elevationAscendedMeters: (workout.metadata?[HKMetadataKeyElevationAscended] as? HKQuantity)?.doubleValue(for: .meter()),
             strokeCount: sum(.swimmingStrokeCount, unit: .count()),
             isIndoorWorkout: workout.metadata?[HKMetadataKeyIndoorWorkout] as? Bool

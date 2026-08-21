@@ -14,8 +14,6 @@ final class WorkoutMapperTests: XCTestCase {
         sourceBundleId: String = "com.garmin.connect.mobile",
         distanceMeters: Double? = 10_000,
         activeEnergyKcal: Double? = 600,
-        avgHeartRate: Double? = 145,
-        maxHeartRate: Double? = 165,
         hrZoneMinutes: HRZoneMinutes? = nil,
         hrZoneSource: HeartRateZoneBoundaries.Source? = nil,
         elevationAscendedMeters: Double? = 42,
@@ -32,8 +30,6 @@ final class WorkoutMapperTests: XCTestCase {
             sourceBundleId: sourceBundleId,
             distanceMeters: distanceMeters,
             activeEnergyKcal: activeEnergyKcal,
-            avgHeartRate: avgHeartRate,
-            maxHeartRate: maxHeartRate,
             hrZoneMinutes: hrZoneMinutes,
             hrZoneSource: hrZoneSource,
             elevationAscendedMeters: elevationAscendedMeters,
@@ -51,21 +47,17 @@ final class WorkoutMapperTests: XCTestCase {
         XCTAssertEqual(record.durationMin, 50.0, accuracy: 0.001)
         XCTAssertEqual(record.distanceKm ?? 0, 10.0, accuracy: 0.001)
         XCTAssertEqual(record.avgSpeedKmh ?? 0, 12.0, accuracy: 0.001)
-        XCTAssertEqual(record.avgHr, 145)
-        XCTAssertEqual(record.maxHr, 165)
         XCTAssertEqual(record.elevationGainM, 42)
         XCTAssertEqual(record.userId, userId)
     }
 
     func testLifeFitnessTreadmillWalkingCountsAsRun() {
-        // Life Fitness由来：心拍・標高なし、walkingでもdisciplineはrun（認識された運動距離は全て走行距離扱い）
+        // Life Fitness由来：標高なし、walkingでもdisciplineはrun（認識された運動距離は全て走行距離扱い）
         let snapshot = makeSnapshot(
             activityType: .walking,
             sourceName: "Life Fitness",
             sourceBundleId: "com.lifefitness.halo",
             distanceMeters: 5_200,
-            avgHeartRate: nil,
-            maxHeartRate: nil,
             elevationAscendedMeters: nil,
             isIndoorWorkout: true
         )
@@ -73,7 +65,6 @@ final class WorkoutMapperTests: XCTestCase {
 
         XCTAssertEqual(record.dataSource, "life_fitness")
         XCTAssertEqual(record.discipline, "run")
-        XCTAssertNil(record.avgHr)
         XCTAssertNil(record.elevationGainM)
         XCTAssertEqual(record.metadata.indoorWorkout, true)
     }
@@ -84,8 +75,6 @@ final class WorkoutMapperTests: XCTestCase {
             sourceName: "Mystery Gym App",
             sourceBundleId: "com.example.gym",
             distanceMeters: nil,
-            avgHeartRate: nil,
-            maxHeartRate: nil,
             elevationAscendedMeters: nil
         )
         let record = WorkoutMapper.record(from: snapshot, userId: userId)
@@ -132,7 +121,7 @@ final class WorkoutMapperTests: XCTestCase {
 
     func testHrZoneSourceOmittedWhenNoZones() {
         let record = WorkoutMapper.record(
-            from: makeSnapshot(avgHeartRate: nil, maxHeartRate: nil),
+            from: makeSnapshot(),
             userId: userId
         )
 
