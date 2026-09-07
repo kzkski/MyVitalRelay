@@ -212,33 +212,9 @@ GET /rest/v1/garmin_activity_claude?garmin_activity_id=eq.{id}&select=activity_n
 | `data_source` | `'garmin'` | |
 | `healthkit_uuid` | **不要** | NULL 可。後続 HK upsert が同一論理キーで埋める |
 
-#### 推奨手順（RPC デプロイ前 = 現状）
+#### 推奨手順（RPC・本番適用済み）
 
-1. 対象日の `training_log` を SELECT（`start_time` 付き行を優先）
-
-```http
-GET /rest/v1/training_log?select=id,date,discipline,start_time,end_time,workout_type,rpe,condition_notes&date=eq.2026-08-25&data_source=eq.garmin&order=start_time.asc.nullslast
-```
-
-2. 行があれば **注釈列のみ PATCH**（メトリクス列は触らない）
-
-```http
-PATCH /rest/v1/training_log?id=eq.{training_log_id}
-Content-Type: application/json
-
-{
-  "rpe": 3,
-  "condition_notes": "暑さでペース抑制"
-}
-```
-
-3. 行が無い場合:
-   - **推奨:** iPhone 同期 or `garmin_sync_request` を待ち、行ができてから PATCH
-   - やむを得ず INSERT するなら archive / summary の時刻で **フル論理キー付き**（`start_time` / `end_time` / `workout_type`）にする。`healthkit_uuid` は NULL でよい
-
-#### 推奨手順（RPC デプロイ後）
-
-`upsert_training_log_annotation` を使う（`p_training_log_id` または `p_garmin_activity_id` 必須。引数 NULL の列は更新しない）。
+**第一選択:** `upsert_training_log_annotation`（`p_training_log_id` または `p_garmin_activity_id` 必須。引数 NULL / 省略の列は更新しない。注釈の明示クリアは不可）。
 
 ```http
 POST /rest/v1/rpc/upsert_training_log_annotation
@@ -252,15 +228,41 @@ Authorization: Bearer <user_access_token>
 }
 ```
 
-> **注:** RPC は Issue #33 PR3 で追加予定。未デプロイなら上記 PATCH 手順を使う。
+既存行 id が分かっている場合:
 
-#### 暫定の重複掃除（根本修正まで）
+```http
+POST /rest/v1/rpc/upsert_training_log_annotation
+Content-Type: application/json
 
-「RPE 空の孤児だけ削除」では足りない。正規行が `start_time` NULL のままだと 14 日 backfill で孤児が再出現する。
+{
+  "p_training_log_id": "5fa5ea06-6e10-438b-b990-8d31fc631eb1",
+  "p_rpe": 2
+}
+```
 
-1. 正規行（注釈あり）へ orphan の `start_time` / `end_time` / `healthkit_uuid` を埋める  
-2. その後 orphan を削除  
-3. `garmin_activity_archive.training_log_id` は正規行を指したままにする
+行も archive も無い場合は例外になる。先に iPhone 同期または `garmin_sync_request` を入れる。
+
+#### 代替: 注釈列のみ PATCH
+
+RPC が使えないときだけ。対象日の行を SELECT してから:
+
+```http
+GET /rest/v1/training_log?select=id,date,discipline,start_time,end_time,workout_type,rpe,condition_notes&date=eq.2026-08-25&data_source=eq.garmin&order=start_time.asc.nullslast
+```
+
+```http
+PATCH /rest/v1/training_log?id=eq.{training_log_id}
+Content-Type: application/json
+
+{
+  "rpe": 3,
+  "condition_notes": "暑さでペース抑制"
+}
+```
+
+メトリクス列は触らない。行が無い場合は HK 同期待ち。やむを得ず INSERT するなら **フル論理キー付き**（`start_time` / `end_time` / `workout_type`）のみ。`healthkit_uuid` は NULL でよい。
+
+DB 側では `data_source='garmin'` かつ時刻 NULL の INSERT は CHECK で拒否される。
 
 ---
 
