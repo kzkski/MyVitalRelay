@@ -110,4 +110,4 @@ Mac + 実機での手順: **`docs/garmin-phase1-mac-checklist.md`**
 - `cadence`: HKWorkout単体からは取得不可のため当面NULL。将来はワークアウト時間帯のstepCountサンプル集計で対応可能。
 - `hr_zone_minutes`: ワークアウト時間帯の心拍サンプルをゾーン別に集計して同期。境界は年齢ベース（生年月日取得不可時は35歳相当の固定値）。`metadata.hr_zone_source` に境界ソース（`age_based` / `fixed_default`）を記録。
 - 体組成・睡眠はフェーズ4で同期実装済み。Shortcuts の HK 連携停止（フェーズ4e）は手動で実施すること。
-- `rpe` / `condition_notes` / 手動記録（`data_source='manual'`）: チャット上のClaudeが記入する運用で、本アプリの対象外。
+- `rpe` / `condition_notes` / 手動記録（`data_source='manual'`）: チャット上の Claude が記入する運用で、本アプリの対象外。Garmin 行への追記は **既存行への PATCH（注釈列のみ）** または将来の `upsert_training_log_annotation` RPC（`docs/claude-garmin-access.md` §4.5 / Issue #33）。論理キー欠落の garmin INSERT は禁止。

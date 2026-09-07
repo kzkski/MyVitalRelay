@@ -133,7 +133,8 @@ PostgREST では `api_responses->get_activity_splits` のような JSON path フ
 GET /rest/v1/training_log?select=id,date,discipline,start_time,rpe,condition_notes&date=gte.2026-07-07&date=lte.2026-07-12&data_source=eq.garmin&order=start_time.desc
 ```
 
-主観データ（RPE, condition_notes）は `training_log` にある。Garmin 詳細と **統合して** 回答する。
+主観データ（RPE, condition_notes）は `training_log` にある。Garmin 詳細と **統合して** 回答する。  
+**書き込み手順は §4.5（Issue #33）を必ず守る。** NULL キー INSERT は禁止。
 
 ### Step 2: Garmin 詳細があるか確認（summary View）
 
@@ -190,6 +191,76 @@ GET /rest/v1/garmin_activity_claude?garmin_activity_id=eq.{id}&select=activity_n
 - `api_responses.get_activity_hr_in_timezones` — 心拍ゾーン
 - `api_responses.get_activity_exercise_sets` — 筋トレセット
 - `fit_parsed.messages` — FIT 全メッセージ（ラップ・記録等）
+
+### 4.5 主観データ（RPE / condition_notes）の書き方（Issue #33）
+
+`training_log` の概要行の正は **HealthKit → iOS SyncEngine**。Claude は主観列だけを載せる。
+
+#### 禁止
+
+- `data_source='garmin'` で次が欠落した **INSERT:**  
+  **`start_time` / `end_time` / `workout_type`**
+- RPE 用に「空の garmin 行」を先に作ること（Postgres UNIQUE は NULL 同士を衝突させない → 後日 HK 同期が孤児行を作る）
+- 重複行を作ってから orphan を削除する運用の常態化
+- `garmin_activity_archive` への直接 UPDATE
+
+#### 必須キー（garmin INSERT する場合）
+
+| 列 | 必須? | 備考 |
+|---|---|---|
+| `start_time` / `end_time` / `workout_type` | **必須** | HK 論理キーと揃える |
+| `data_source` | `'garmin'` | |
+| `healthkit_uuid` | **不要** | NULL 可。後続 HK upsert が同一論理キーで埋める |
+
+#### 推奨手順（RPC デプロイ前 = 現状）
+
+1. 対象日の `training_log` を SELECT（`start_time` 付き行を優先）
+
+```http
+GET /rest/v1/training_log?select=id,date,discipline,start_time,end_time,workout_type,rpe,condition_notes&date=eq.2026-08-25&data_source=eq.garmin&order=start_time.asc.nullslast
+```
+
+2. 行があれば **注釈列のみ PATCH**（メトリクス列は触らない）
+
+```http
+PATCH /rest/v1/training_log?id=eq.{training_log_id}
+Content-Type: application/json
+
+{
+  "rpe": 3,
+  "condition_notes": "暑さでペース抑制"
+}
+```
+
+3. 行が無い場合:
+   - **推奨:** iPhone 同期 or `garmin_sync_request` を待ち、行ができてから PATCH
+   - やむを得ず INSERT するなら archive / summary の時刻で **フル論理キー付き**（`start_time` / `end_time` / `workout_type`）にする。`healthkit_uuid` は NULL でよい
+
+#### 推奨手順（RPC デプロイ後）
+
+`upsert_training_log_annotation` を使う（`p_training_log_id` または `p_garmin_activity_id` 必須。引数 NULL の列は更新しない）。
+
+```http
+POST /rest/v1/rpc/upsert_training_log_annotation
+Content-Type: application/json
+Authorization: Bearer <user_access_token>
+
+{
+  "p_garmin_activity_id": 24108978987,
+  "p_rpe": 3,
+  "p_condition_notes": "暑さでペース抑制"
+}
+```
+
+> **注:** RPC は Issue #33 PR3 で追加予定。未デプロイなら上記 PATCH 手順を使う。
+
+#### 暫定の重複掃除（根本修正まで）
+
+「RPE 空の孤児だけ削除」では足りない。正規行が `start_time` NULL のままだと 14 日 backfill で孤児が再出現する。
+
+1. 正規行（注釈あり）へ orphan の `start_time` / `end_time` / `healthkit_uuid` を埋める  
+2. その後 orphan を削除  
+3. `garmin_activity_archive.training_log_id` は正規行を指したままにする
 
 ---
 
@@ -277,6 +348,11 @@ HealthKit 経由の自動投入は **直近約 14 日** の Garmin ワークア�
 | 認証未設定で complete になる | 認証失敗は通常 `failed`。complete で summary 空なら空振り |
 | INSERT 後すぐ summary に行が出る | Webhook → GitHub Actions 起動に数十秒〜2分。`status` をポーリング |
 | Webhook 失敗時 | **Garmin Sync 手動 Run** で pending 全件を処理可能 |
+| RPE 用に先に空の garmin 行を作る | **禁止**（NULL キー穴 → HK が孤児を作る。§4.5） |
+| archive に `training_log_id` があれば HK は挿入しない | **誤り**。Garmin job は CREATE せず、HK upsert は独立 |
+| UNIQUE があるから重複しない | NULL の `start_time`/`end_time` は UNIQUE をすり抜ける（Issue #33） |
+| `distance_km` が違うから別セッション | 丸め差の可能性。論理キー（start/end/workout_type）を見る |
+| `healthkit_uuid` が無いと INSERT できない | **誤り**。必須は times + `workout_type`（uuid は HK 後埋め可） |
 
 ---
 
