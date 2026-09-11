@@ -153,7 +153,7 @@ final class SyncEngine {
             after: BodyCompositionAnchorStore.loadBodyMass(),
             bodyFatAnchor: BodyCompositionAnchorStore.loadBodyFat()
         )
-        let records = result.samples.map {
+        let records = result.samples.compactMap {
             BodyCompositionMapper.record(from: BodyCompositionSnapshot(sample: $0), userId: userId)
         }
         if !records.isEmpty {

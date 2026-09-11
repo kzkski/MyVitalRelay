@@ -120,7 +120,7 @@ async function loadDaySamples(
 ): Promise<BodySample[]> {
   const { data, error } = await sb
     .from("body_composition_sample")
-    .select("measured_at,weight_kg,body_fat_pct")
+    .select("measured_at,weight_kg,body_fat_pct,source_bundle_id")
     .eq("user_id", userId)
     .eq("date", date);
 

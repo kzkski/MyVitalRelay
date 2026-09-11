@@ -12,12 +12,24 @@ def round1(value: float) -> float:
     return round(value * 10) / 10
 
 
+DENIED_BODY_SOURCE_BUNDLE_IDS = frozenset({"com.garmin.connect.mobile"})
+
+
+def is_denied_body_source(bundle_id: Any) -> bool:
+    return bundle_id is not None and str(bundle_id) in DENIED_BODY_SOURCE_BUNDLE_IDS
+
+
 def pick_daily_metrics(samples: list[dict[str, Any]]) -> dict[str, float]:
-    """Pick earliest weight_kg and body_fat_pct independently by measured_at."""
+    """Pick earliest weight_kg and body_fat_pct independently by measured_at.
+
+    Garmin Connect Mobile samples are skipped (Issue #38). Missing bundle id is allowed.
+    """
     first_weight: tuple[str, float] | None = None
     first_bf: tuple[str, float] | None = None
 
     for sample in samples:
+        if is_denied_body_source(sample.get("source_bundle_id")):
+            continue
         measured_at = str(sample.get("measured_at") or "")
         weight = sample.get("weight_kg")
         body_fat = sample.get("body_fat_pct")
