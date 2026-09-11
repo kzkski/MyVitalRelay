@@ -80,7 +80,7 @@ def main() -> None:
 
     resp = (
         sb.table("body_composition_sample")
-        .select("date,measured_at,weight_kg,body_fat_pct")
+        .select("date,measured_at,weight_kg,body_fat_pct,source_bundle_id")
         .eq("user_id", supabase_user_id)
         .order("date")
         .execute()

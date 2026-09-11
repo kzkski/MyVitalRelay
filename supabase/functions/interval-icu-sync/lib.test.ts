@@ -14,6 +14,56 @@ import {
   wellnessPutUrl,
 } from "./lib.ts";
 
+Deno.test("pickDailyMetrics ignores denied Connect even if earliest", () => {
+  const metrics = pickDailyMetrics([
+    {
+      measured_at: "2026-09-10T15:10:10Z",
+      weight_kg: 64.2,
+      body_fat_pct: null,
+      source_bundle_id: "com.garmin.connect.mobile",
+    },
+    {
+      measured_at: "2026-09-11T00:39:08Z",
+      weight_kg: 64.3,
+      body_fat_pct: null,
+      source_bundle_id: "com.oceanwing.z.smarthome",
+    },
+    {
+      measured_at: "2026-09-11T00:39:08Z",
+      weight_kg: null,
+      body_fat_pct: 18.7,
+      source_bundle_id: "com.oceanwing.z.smarthome",
+    },
+  ]);
+  assertEquals(metrics.weight, 64.3);
+  assertEquals(metrics.bodyFat, 18.7);
+});
+
+Deno.test("pickDailyMetrics all Connect yields empty", () => {
+  assertEquals(
+    pickDailyMetrics([
+      {
+        measured_at: "2026-09-10T15:10:10Z",
+        weight_kg: 64.2,
+        body_fat_pct: null,
+        source_bundle_id: "com.garmin.connect.mobile",
+      },
+    ]),
+    {},
+  );
+});
+
+Deno.test("pickDailyMetrics missing source_bundle_id still considered", () => {
+  const metrics = pickDailyMetrics([
+    {
+      measured_at: "2026-09-11T00:00:00Z",
+      weight_kg: 65.0,
+      body_fat_pct: null,
+    },
+  ]);
+  assertEquals(metrics.weight, 65.0);
+});
+
 Deno.test("pickDailyMetrics picks earliest weight and bodyFat independently", () => {
   const metrics = pickDailyMetrics([
     {

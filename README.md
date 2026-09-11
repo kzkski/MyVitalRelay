@@ -95,7 +95,7 @@ Mac + 実機での手順: **`docs/garmin-phase1-mac-checklist.md`**
 詳細手順: `docs/garmin-phase1-mac-checklist.md`
 
 ### 体組成・睡眠（フェーズ4）
-7. 体重計測定1回が `body_composition_sample` に1行入る（体重・体脂肪は別 UUID になりうる）
+7. 体重計測定1回が `body_composition_sample` に1行入る（体重・体脂肪は別 UUID になりうる）。Garmin Connect Mobile（`com.garmin.connect.mobile`）の体組成は取り込まない（Issue #38）
 8. 睡眠セグメント（core/deep/rem/unspecified）が `sleep_segment` に入る（awake/inBed は同期されない）
 9. 体組成・睡眠も「今すぐ同期」で冪等であること
 10. Shortcuts の体重・睡眠 HK 連携を停止し、PFC・notes はケトログ従来通り

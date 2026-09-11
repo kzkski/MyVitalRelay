@@ -4,7 +4,19 @@ export type BodySample = {
   measured_at: string;
   weight_kg: number | null;
   body_fat_pct: number | null;
+  source_bundle_id?: string | null;
 };
+
+/** Garmin Connect Mobile profile weight (Issue #38). Missing bundle id is allowed. */
+export const DENIED_BODY_SOURCE_BUNDLE_IDS = new Set([
+  "com.garmin.connect.mobile",
+]);
+
+export function isDeniedBodySource(
+  bundleId: string | null | undefined,
+): boolean {
+  return bundleId != null && DENIED_BODY_SOURCE_BUNDLE_IDS.has(bundleId);
+}
 
 export type DailyMetrics = {
   weight?: number;
@@ -25,12 +37,14 @@ export function round1(value: number): number {
  * Pick independent first (earliest measured_at) weight and body-fat for a calendar day.
  * Weight and body fat may live on different HealthKit sample rows.
  * Later same-day readings are ignored for Intervals.icu wellness.
+ * Garmin Connect Mobile samples are skipped (Issue #38).
  */
 export function pickDailyMetrics(samples: BodySample[]): DailyMetrics {
   let firstWeight: { at: string; value: number } | null = null;
   let firstBodyFat: { at: string; value: number } | null = null;
 
   for (const sample of samples) {
+    if (isDeniedBodySource(sample.source_bundle_id)) continue;
     if (sample.weight_kg != null && Number.isFinite(sample.weight_kg)) {
       if (!firstWeight || sample.measured_at < firstWeight.at) {
         firstWeight = { at: sample.measured_at, value: sample.weight_kg };

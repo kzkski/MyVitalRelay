@@ -35,6 +35,52 @@ def test_pick_daily_metrics_empty() -> None:
     assert pick_daily_metrics([]) == {}
 
 
+def test_pick_daily_metrics_ignores_garmin_connect_earliest() -> None:
+    metrics = pick_daily_metrics(
+        [
+            {
+                "measured_at": "2026-09-10T15:10:10Z",
+                "weight_kg": 64.2,
+                "body_fat_pct": None,
+                "source_bundle_id": "com.garmin.connect.mobile",
+            },
+            {
+                "measured_at": "2026-09-11T00:39:08Z",
+                "weight_kg": 64.3,
+                "body_fat_pct": None,
+                "source_bundle_id": "com.oceanwing.z.smarthome",
+            },
+            {
+                "measured_at": "2026-09-11T00:39:08Z",
+                "weight_kg": None,
+                "body_fat_pct": 18.7,
+                "source_bundle_id": "com.oceanwing.z.smarthome",
+            },
+        ]
+    )
+    assert metrics == {"weight": 64.3, "bodyFat": 18.7}
+
+
+def test_pick_daily_metrics_all_connect_empty() -> None:
+    assert pick_daily_metrics(
+        [
+            {
+                "measured_at": "2026-09-10T15:10:10Z",
+                "weight_kg": 64.2,
+                "body_fat_pct": None,
+                "source_bundle_id": "com.garmin.connect.mobile",
+            }
+        ]
+    ) == {}
+
+
+def test_pick_daily_metrics_allows_missing_bundle_id() -> None:
+    metrics = pick_daily_metrics(
+        [{"measured_at": "2026-09-11T00:00:00Z", "weight_kg": 65.0, "body_fat_pct": None}]
+    )
+    assert metrics == {"weight": 65.0}
+
+
 def test_build_wellness_bulk_item() -> None:
     assert build_wellness_bulk_item("2026-07-27", {}) is None
     assert build_wellness_bulk_item("2026-07-27", {"weight": 70.0}) == {
