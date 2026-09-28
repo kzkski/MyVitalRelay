@@ -128,10 +128,10 @@ final class SyncEngine {
         // 新UUIDへ更新済みのため、旧UUIDでのDELETEは何も消さない（追記が保持される）。
         // 差し替えの片割れが後続バッチで届くケースに備え、会話で追記された列を持つ行は
         // 削除対象から外す。残った行は後続の論理キーupsertで新UUIDへ更新されて1行に収まる。
-        if !result.deletedUUIDs.isEmpty {
+        for batch in HealthKitDeletionBatches.batches(of: result.deletedUUIDs) {
             try await client.from("training_log")
                 .delete()
-                .in("healthkit_uuid", values: result.deletedUUIDs)
+                .in("healthkit_uuid", values: batch)
                 .is("rpe", value: nil)
                 .is("condition_notes", value: nil)
                 .is("surface", value: nil)
@@ -179,10 +179,10 @@ final class SyncEngine {
         let result = try await fetcher.fetchNewSegments(after: SleepSegmentAnchorStore.load())
         let deletedUUIDs = result.deletedUUIDs
 
-        if !deletedUUIDs.isEmpty {
+        for batch in HealthKitDeletionBatches.batches(of: deletedUUIDs) {
             try await client.from("sleep_segment")
                 .delete()
-                .in("healthkit_uuid", values: deletedUUIDs)
+                .in("healthkit_uuid", values: batch)
                 .execute()
         }
 
